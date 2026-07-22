@@ -36,7 +36,7 @@ allocator.
 ```c
 void *afalloc(size_t size);   // allocate
 void  f_free(void *ptr);      // release, then coalesce
-void  nuke(void);             // reset the whole region to one free block
+void  reset_region(void);   // reset the whole region to one free block
 ```
 
 **Build and run**
