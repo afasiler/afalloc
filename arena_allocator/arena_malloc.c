@@ -65,9 +65,9 @@ void afa_reset(){
 
 int main(void){
     void *ptr1 = afalloc(16);
-    printf("\nvayobabayn16");
+    printf("\nAllocated 16 bytes at %p", ptr1);
     void *ptr2 = afalloc(32);
-    printf("\nvayobabayn32");
+    printf("\nAllocated 32 bytes at %p", ptr2);
     printf("\n%p", ptr1);
     printf("\n%p", ptr2);
     afa_reset();

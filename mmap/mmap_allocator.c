@@ -46,10 +46,10 @@ void* afalloc(size_t size) {
     }
     
     size = (size + 7) & ~7; 
-    int indexmaxxing = 0;
+    int curr_index = 0;
     
-    while (indexmaxxing < 1024 * 1024) {
-        if (indexmaxxing == frontier) {
+    while (curr_index < 1024 * 1024) {
+        if (curr_index == frontier) {
             struct metadata *head = (struct metadata*)(mem + frontier);
             head->size = size;
             head->magic = 0xAFA2BABA;
@@ -58,7 +58,7 @@ void* afalloc(size_t size) {
             frontier += sizeof(struct metadata) + size;
             return (void*)((unsigned char*)head + sizeof(struct metadata));
         } else {
-            struct metadata *isIt = (struct metadata*)(mem + indexmaxxing);
+            struct metadata *isIt = (struct metadata*)(mem + curr_index);
             
             if (isIt->magic == 0xAFA2BABA) {
                 if (isIt->free == 1 && isIt->size >= size) {
@@ -73,7 +73,7 @@ void* afalloc(size_t size) {
                     isIt->free = 0;
                     return (void*)((unsigned char*)isIt + sizeof(struct metadata));
                 } else {
-                    indexmaxxing += sizeof(struct metadata) + isIt->size;
+                    curr_index += sizeof(struct metadata) + isIt->size;
                 }
             } else {
                 return NULL;
@@ -93,7 +93,7 @@ void f_free(void *ptr) {
     }
 }
 
-void nuke() {
+void reset_region() {
     if (mem == NULL) return;
     
     struct metadata *start = (struct metadata*)mem;
