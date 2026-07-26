@@ -1,0 +1,21 @@
+=== afalloc(0) ===
+0x108b38010
+
+=== tek blok (1MB-16) ===
+0x0    NULL, dogru
+
+=== doldurma (1008 byte) ===
+0     0x108b38020
+1     0x108b38420
+...
+1022  0x108c37820
+1023  0x0   tam 1024 blok sigdi 1025. NULL
+
+=== linked list ===
+first  = 0x108b38010, number = 15
+second = 0x108b38030, number = 30
+third  = 0x108b38050, number = 45
+
+=== coalescing ===
+first2 = 0x108b38010  first'un adresi = birlestirme dogru
+third  = 0x108b38050, number = 45 
