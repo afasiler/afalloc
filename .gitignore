@@ -3,3 +3,6 @@ a.out
 *.o
 kaynak/
 *.pdf
+test
+*.dSYM
+*.txt

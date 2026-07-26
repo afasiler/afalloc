@@ -1,11 +1,13 @@
 #include <sys/mman.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "mmap_allocator.h"
+
 
 unsigned char *mem = NULL;
 int frontier = 0;
 
-struct metadata {
+struct metadata { 
     size_t size;
     uint32_t magic;
     int free;
@@ -44,12 +46,16 @@ void* afalloc(size_t size) {
     if (mem == NULL) {
         mem = (unsigned char*)chunk();
     }
+    if (size == 0) return NULL;
     
     size = (size + 7) & ~7; 
     int curr_index = 0;
     
     while (curr_index < 1024 * 1024) {
         if (curr_index == frontier) {
+            if (frontier + sizeof(struct metadata) + size > 1024*1024) {
+                return NULL;
+            }
             struct metadata *head = (struct metadata*)(mem + frontier);
             head->size = size;
             head->magic = 0xAFA2BABA;
@@ -100,5 +106,7 @@ void reset_region() {
     start->size = (1024 * 1024) - sizeof(struct metadata);
     start->magic = 0xAFA2BABA;
     start->free = 1;
-    frontier = 1024 * 1024;
+    frontier = 0;
 }
+
+
