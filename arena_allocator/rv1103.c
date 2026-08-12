@@ -1,14 +1,8 @@
-/*
-custom arena allocator for luckfox pico mini a rv1103
-but it can work through all mcu and low level computer to get max performance with allocation.
-*/
-
-
 #include <stdio.h>
 #include <stdlib.h>
 
 #define MEM_SIZE (1024*1024)
-unsigned char memory[MEM_SIZE];// luckfox pico mini a rv1103 nasıl memory alıyorsa birlikte konusup hallederiz.
+unsigned char memory[MEM_SIZE];
 
 struct metadata{
     int size;
@@ -18,11 +12,11 @@ struct metadata{
 int frontier = 0;
 
 void *afalloc(int size){
-    if (size <= 0) return NULL; //0 ve negatif reddedilir, sessizce yuvarlanip gecmez
+    if (size <= 0) return NULL;
     size = (size + 7) & ~7;
 
-    int cur_offset = (frontier == -1) ? 0 : frontier; //frontier==-1 sentinel, gercek kullanilan byte 0'dir
-    if((cur_offset + size + sizeof(struct metadata)) <= MEM_SIZE){//ife giremiyorsa bi tane daha arena alanı çekeriz.
+    int cur_offset = (frontier == -1) ? 0 : frontier;
+    if((cur_offset + size + sizeof(struct metadata)) <= MEM_SIZE){
         if(frontier == -1){
             struct metadata *header = (struct metadata*)&memory;
             header->isfree = 0;
@@ -48,4 +42,4 @@ void afa_reset(){
     struct metadata *header = (struct metadata*)memory;
     header->isfree = 1;
     header->size = MEM_SIZE - sizeof(struct metadata);
-}//her frame sonrası veya ihtiyac sonrası geri verilmesin sıfırlansın yeniden kullanılsın syscallarla sbrk brklarla mmaplerle uygrasmamalıyız. 
+}
