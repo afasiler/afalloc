@@ -83,8 +83,41 @@ static void test_free_rejects_foreign_pointer(void){
     f_free(fake + 32);                    /* no magic header -> ignored */
 }
 
+/* A header that was merged into its predecessor, or that predates a
+   reset_region(), is stale. Freeing through it again must be ignored, or
+   lowest_free would point into a live payload and hand it out a second time. */
+static void test_stale_free_is_ignored(void){
+    unsigned char *a = afalloc(64);
+    unsigned char *b = afalloc(64);
+    unsigned char *c = afalloc(64);
+    assert(a && b && c);
+    f_free(a);
+    f_free(b);                            /* b merges into a: 64 + 16 + 64 */
+    unsigned char *x = afalloc(144);      /* takes the merged block whole */
+    assert(x == a);
+    memset(x, 0x77, 32);                  /* x leaves b's old header untouched */
+    f_free(b);                            /* stale: b's header is inside x */
+    unsigned char *y = afalloc(32);
+    assert(y != NULL);
+    assert(y + 32 <= x || y >= x + 144);  /* must not overlap x */
+    for (int i = 0; i < 32; i++) assert(x[i] == 0x77);
+    reset_region();
+
+    unsigned char *p = afalloc(64);
+    unsigned char *q = afalloc(64);
+    assert(p && q);
+    reset_region();
+    f_free(q);                            /* pointer from before the reset */
+    unsigned char *r = afalloc(64);
+    unsigned char *s = afalloc(64);
+    assert(r && s && r != s);
+    assert(r + 64 <= s || s + 64 <= r);
+    reset_region();
+}
+
 int main(void){
     test_zero_size();
+    test_stale_free_is_ignored();
     test_region_bounds();
     test_fill_region();
     test_linked_list_and_reuse();

@@ -4,8 +4,8 @@
 #include "mmap_allocator.h"
 
 
-unsigned char *mem = NULL;
-size_t frontier = 0;
+static unsigned char *mem = NULL;
+static size_t frontier = 0;
 
 struct metadata {
     size_t size;
@@ -22,7 +22,7 @@ struct metadata {
    frontier O(1) instead of walking the whole list. */
 static size_t lowest_free = 0;
 
-void* chunk() {
+static void* chunk(void) {
     return mmap(NULL, 1024 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
@@ -44,6 +44,7 @@ static void coalesce_until(size_t stop) {
 
                 if (nextIt->magic == 0xAFA2BABA && nextIt->free == 1) {
                     isIt->size += sizeof(struct metadata) + nextIt->size;
+                    nextIt->magic = 0;      /* absorbed: stale pointers to it must not pass f_free */
                     continue;
                 }
             }
@@ -52,7 +53,7 @@ static void coalesce_until(size_t stop) {
     }
 }
 
-void f_coalescing() {
+void f_coalescing(void) {
     if (mem == NULL || frontier == 0) return;
     coalesce_until(frontier);
 }
@@ -119,9 +120,17 @@ void* afalloc(size_t size) {
 }
 
 void f_free(void *ptr) {
-    if (ptr == NULL) return;
+    if (ptr == NULL || mem == NULL) return;
 
-    struct metadata *head = (struct metadata*)((unsigned char*)ptr - sizeof(struct metadata));
+    /* Only a block that starts inside the allocated part of the region can be
+       real: a pointer from before reset_region() or from outside the region
+       is ignored without being dereferenced, because lowest_free must always
+       stay a genuine block boundary. */
+    unsigned char *p = (unsigned char*)ptr;
+    if (p < mem + sizeof(struct metadata) || p >= mem + frontier) return;
+    if (((size_t)(p - mem) & 7) != 0) return;
+
+    struct metadata *head = (struct metadata*)(p - sizeof(struct metadata));
     if (head->magic == 0xAFA2BABA) {
         size_t offset = (size_t)((unsigned char*)head - mem);
         head->free = 1;
@@ -130,7 +139,7 @@ void f_free(void *ptr) {
     }
 }
 
-void reset_region() {
+void reset_region(void) {
     if (mem == NULL) return;
 
     struct metadata *start = (struct metadata*)mem;

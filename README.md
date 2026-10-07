@@ -123,6 +123,9 @@ comparison. Run its tests with `make test` (`mmap/test.c`).
   up to the freed block rather than the whole region.
 - **Safe failure:** zero-size, oversized (including `SIZE_MAX`, which used to
   wrap to a 0-byte block when rounded) and `MAP_FAILED` all return `NULL`.
+  `f_free()` ignores pointers outside the allocated part of the region and
+  headers that were merged into a neighbour, so a double free or a pointer from
+  before `reset_region()` cannot corrupt the free-block hint.
 
 ```c
 void *afalloc(size_t size);
@@ -142,9 +145,13 @@ The first experiment: a fixed 1 MiB **static array** with boundary tags. Each
 block carries a header *and* a footer holding a back-pointer to its header,
 which makes constant-time backward coalescing possible. `arena_free()` takes
 the user pointer (like `free`) and coalesces in both directions via
-`arena_coalesce()`. The capacity check aligns the size first, so a request near
-the end of the region can no longer overrun it. Tested by
-`arena_allocator/test_arena_malloc.c`.
+`arena_coalesce()`. Freed blocks are reused: `afalloc()` is first-fit (with
+splitting) over the blocks below the frontier, starting from a `first_free`
+hint so plain bump allocation stays O(1), and a free block that ends at the
+frontier is handed back to it. The capacity check aligns the size first, so a
+request near the end of the region can no longer overrun it. Tested by
+`arena_allocator/test_arena_malloc.c` and a randomized
+`arena_allocator/stress_arena_malloc.c`.
 
 ```bash
 cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./arena

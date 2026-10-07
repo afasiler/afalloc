@@ -49,8 +49,41 @@ static void test_free_and_coalesce(void){
     afa_reset();
 }
 
+static void test_reuse(void){
+    /* a freed block is handed out again, split when much larger than needed */
+    unsigned char *a = afalloc(256);
+    unsigned char *b = afalloc(64);
+    assert(a && b);
+    arena_free(a);
+    unsigned char *c = afalloc(64);
+    assert(c == a);                       /* first fit lands in the freed block */
+    unsigned char *d = afalloc(64);       /* the split remainder is reusable too */
+    assert(d && d > c && d < b);
+    afa_reset();
+
+    /* freeing the last block returns it to the frontier */
+    unsigned char *x = afalloc(100);
+    unsigned char *y = afalloc(100);
+    assert(x && y);
+    arena_free(y);
+    assert(afalloc(100) == y);
+    arena_free(y);
+    arena_free(x);                        /* merges backward, then reaches the frontier */
+    assert(afalloc(100) == x);
+    afa_reset();
+
+    /* the whole arena can be filled, freed and filled again */
+    size_t max = ARENA - OVERHEAD;
+    unsigned char *big = afalloc(max);
+    assert(big != NULL && afalloc(1) == NULL);
+    arena_free(big);
+    assert(afalloc(max) == big);
+    afa_reset();
+}
+
 int main(void){
     test_bounds();
+    test_reuse();
     test_free_and_coalesce();
     puts("test_arena_malloc: all tests passed");
     return 0;

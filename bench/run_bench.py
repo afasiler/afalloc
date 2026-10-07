@@ -113,7 +113,7 @@ def main():
     table("Interleaved alloc/free churn (256 live slots, 16..512 B), ns per op",
           [("ns/op", "churn_alloc_free", "ns_per_op"),
            ("failed allocs", "churn_alloc_free", "failed_allocs")],
-          "`arena` (rv1103) has no free, so it cannot run this workload; `arenaf` runs out of memory here (see caveats), so ignore its ns/op.\n")
+          "`arena` (rv1103) has no free, so it cannot run this workload.\n")
 
 if __name__ == "__main__":
     main()
