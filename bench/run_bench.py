@@ -77,6 +77,32 @@ def main():
           "")
     table("Address-space cost of a 16 B allocation (bytes)",
           [("bytes per 16 B alloc", "density_16B", "bytes_per_alloc")])
+    large = [("64 KiB", "large_64KiB"), ("256 KiB", "large_256KiB"), ("512 KiB", "large_512KiB"),
+             ("1 MiB - 16 B (largest supported)", "large_max"),
+             ("random 1 B .. 1 MiB - 16 B", "large_random"),
+             ("exactly 1 MiB", "large_1MiB_exact")]
+    def utable(title, metric, note=""):
+        print(f"\n### {title}\n{note}")
+        print("| block size | " + " | ".join(LABEL[n] for n in names) + " |")
+        print("|---|" + "---:|" * len(names))
+        for l, w in large:
+            cells = []
+            for n in names:
+                v = res[n].get((w, metric))
+                cells.append("n/a" if v is None else f"{v / 1000:.3f}")
+            print(f"| {l} | " + " | ".join(cells) + " |")
+    print("\n## Large allocations: 1,000 iterations of alloc, touch, release per block size")
+    print("Times are microseconds per block. One block is live at a time because the bump arenas are a single 1 MiB region.")
+    utable("Allocate (us per block)", "alloc_ns")
+    utable("Release (us per block)", "release_ns")
+    utable("Touch first and last byte (us per block)", "touch_sparse_ns")
+    utable("Write every byte with memset (us per block)", "touch_full_ns",
+           "Includes page-fault cost on fresh pages; bump arenas reuse already-faulted pages.\n")
+    print("\n### Failed allocations per 1,000 requests")
+    print("| block size | " + " | ".join(LABEL[n] for n in names) + " |")
+    print("|---|" + "---:|" * len(names))
+    for l, w in large:
+        print(f"| {l} | " + " | ".join(cell(n, w, "failed_allocs", "{:.0f}") for n in names) + " |")
     table("Per-allocation latency, mixed sizes (ns)",
           [("p50", "latency_mixed", "p50_ns"), ("p99", "latency_mixed", "p99_ns"),
            ("p99.9", "latency_mixed", "p999_ns"), ("max", "latency_mixed", "max_ns"),

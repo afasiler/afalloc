@@ -242,6 +242,50 @@ static void run_churn(void) {
 }
 #endif
 
+/* ---- large allocations: one block per iteration, up to 1 MiB ------------ */
+
+/* 1000 iterations of alloc -> touch -> release for one block size (0 = random
+   size in 1..1 MiB-16 per iteration). A bump arena is a single 1 MiB region, so
+   1000 live blocks cannot coexist; each block is released before the next, which
+   is also how malloc is driven so the comparison stays like-for-like. */
+static void run_large(const char *name, size_t fixed) {
+    enum { ITERS = 1000 };
+    const size_t max_req = 1024 * 1024 - HEADER;
+    for (int i = 0; i < ITERS; i++) sizes[i] = fixed ? fixed : 1 + rnd() % max_req;
+
+    double a[SAMPLES], ts[SAMPLES], tf[SAMPLES], r[SAMPLES];
+    size_t fails = 0;
+    for (int smp = -1; smp < SAMPLES; smp++) {
+        uint64_t ta = 0, tts = 0, ttf = 0, tr = 0;
+        size_t ok = 0;
+        for (int i = 0; i < ITERS; i++) {
+            uint64_t t0 = now_ns();
+            unsigned char *p = be_alloc(sizes[i]);
+            uint64_t t1 = now_ns();
+            ta += t1 - t0;
+            if (!p) { if (smp >= 0) fails++; continue; }
+            ok++;
+            p[0] = 1; p[sizes[i] - 1] = 2;
+            uint64_t t2 = now_ns();
+            memset(p, i & 0xFF, sizes[i]);
+            uint64_t t3 = now_ns();
+            ptrs[0] = p;
+            be_release(ptrs, 1);
+            uint64_t t4 = now_ns();
+            tts += t2 - t1; ttf += t3 - t2; tr += t4 - t3;
+        }
+        if (smp < 0 || ok == 0) continue;
+        a[smp] = (double)ta / ITERS; ts[smp] = (double)tts / ok;
+        tf[smp] = (double)ttf / ok;  r[smp] = (double)tr / ok;
+    }
+    emit(name, "failed_allocs", (double)fails / SAMPLES);   /* per sample of 1000 */
+    if (fails == (size_t)SAMPLES * ITERS) return;           /* unsupported size */
+    emit(name, "alloc_ns", median(a, SAMPLES));
+    emit(name, "touch_sparse_ns", median(ts, SAMPLES));
+    emit(name, "touch_full_ns", median(tf, SAMPLES));
+    emit(name, "release_ns", median(r, SAMPLES));
+}
+
 /* ---- correctness gate: refuse to benchmark a broken allocator ----------- */
 
 static void self_check(void) {
@@ -279,6 +323,13 @@ int main(void) {
 
     size_t n = fill_mixed();
     run_batch("mixed_sizes", n, 150);
+
+    run_large("large_64KiB",      64 * 1024);
+    run_large("large_256KiB",    256 * 1024);
+    run_large("large_512KiB",    512 * 1024);
+    run_large("large_max",  1024 * 1024 - HEADER);   /* largest block afalloc supports */
+    run_large("large_1MiB_exact", 1024 * 1024);      /* does not fit with a header */
+    run_large("large_random",                0);     /* uniform 1..1 MiB-16 */
 
     run_latency();
 #if BE_HAS_FREE
