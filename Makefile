@@ -7,7 +7,7 @@ BUILD   = build
 PERSIST = mmap/afalloc_persistent.c
 PHDR    = mmap/afalloc_persistent.h
 
-.PHONY: all test tsan valgrind bench clean
+.PHONY: all test tsan valgrind bench bench-compare clean
 all: test
 
 $(BUILD):
@@ -21,6 +21,9 @@ $(BUILD)/stress: mmap/stress.c $(PERSIST) $(PHDR) | $(BUILD)
 
 $(BUILD)/test_mmap: mmap/test.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) mmap/test.c mmap/mmap_allocator.c -o $@
+
+$(BUILD)/stress_gp: mmap/stress_gp.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(BUILD)
+	$(CC) $(CFLAGS) $(SAN) mmap/stress_gp.c mmap/mmap_allocator.c -o $@
 
 $(BUILD)/test_arena_rv1103: arena_allocator/test_rv1103.c arena_allocator/rv1103.c | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) arena_allocator/test_rv1103.c arena_allocator/rv1103.c -o $@
@@ -39,10 +42,11 @@ $(BUILD)/bench: mmap/bench.c $(PERSIST) $(PHDR) | $(BUILD)
 	$(CC) -O2 -Wall -Wextra mmap/bench.c $(PERSIST) -o $@
 
 test: $(BUILD)/test_persistent $(BUILD)/stress $(BUILD)/test_mmap \
-      $(BUILD)/test_arena_rv1103 $(BUILD)/test_arena_malloc
+      $(BUILD)/stress_gp $(BUILD)/test_arena_rv1103 $(BUILD)/test_arena_malloc
 	$(BUILD)/test_persistent
 	$(BUILD)/stress
 	$(BUILD)/test_mmap
+	$(BUILD)/stress_gp
 	$(BUILD)/test_arena_rv1103
 	$(BUILD)/test_arena_malloc
 
@@ -57,3 +61,7 @@ bench: $(BUILD)/bench
 
 clean:
 	rm -rf $(BUILD)
+
+# libc malloc vs every afalloc variant (-O2, no sanitizers); see bench/RESULTS.md
+bench-compare:
+	python3 bench/run_bench.py

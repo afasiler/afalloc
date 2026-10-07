@@ -22,6 +22,11 @@ struct node2{
 
 static void test_zero_size(void){
     assert(afalloc(0) == NULL);        /* no block is created for size 0 */
+    /* regression: (size + 7) & ~7 wrapped to 0 and returned a 0-byte block */
+    assert(afalloc(SIZE_MAX) == NULL);
+    assert(afalloc(SIZE_MAX - 3) == NULL);
+    assert(afalloc(SIZE_MAX - 7) == NULL);
+    assert(afalloc(REGION - HEADER + 1) == NULL);
     f_free(NULL);                      /* must be a harmless no-op */
     reset_region();
 }

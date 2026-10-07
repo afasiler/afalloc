@@ -5,36 +5,46 @@
 
 
 unsigned char *mem = NULL;
-int frontier = 0;
+size_t frontier = 0;
 
-struct metadata { 
+struct metadata {
     size_t size;
     uint32_t magic;
     int free;
 };
 
+#define REGION_SIZE ((size_t)1024 * 1024)
+#define MAX_REQUEST (REGION_SIZE - sizeof(struct metadata))
+
+/* Offset of a block boundary at or before every free block (== frontier when
+   nothing is free). Every block before it is in use, so searches and
+   coalescing start here instead of at 0, which keeps allocating at the
+   frontier O(1) instead of walking the whole list. */
+static size_t lowest_free = 0;
+
 void* chunk() {
     return mmap(NULL, 1024 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
-void f_coalescing() {
-    if (mem == NULL || frontier == 0) return;
-    
-    int curr = 0;
-    while (curr < frontier) {
+/* Merge adjacent free blocks, walking from lowest_free until the walk has
+   passed `stop` (a block offset). Merging only ever looks forward, so a freed
+   block is joined to a free predecessor when the walk reaches that predecessor. */
+static void coalesce_until(size_t stop) {
+    size_t curr = lowest_free;
+    while (curr < frontier && curr <= stop) {
         struct metadata *isIt = (struct metadata*)(mem + curr);
-        
+
         if (isIt->magic != 0xAFA2BABA) break;
 
         if (isIt->free == 1) {
-            int next = curr + sizeof(struct metadata) + isIt->size;
-            
+            size_t next = curr + sizeof(struct metadata) + isIt->size;
+
             if (next < frontier) {
                 struct metadata *nextIt = (struct metadata*)(mem + next);
-                
+
                 if (nextIt->magic == 0xAFA2BABA && nextIt->free == 1) {
                     isIt->size += sizeof(struct metadata) + nextIt->size;
-                    continue; 
+                    continue;
                 }
             }
         }
@@ -42,44 +52,63 @@ void f_coalescing() {
     }
 }
 
+void f_coalescing() {
+    if (mem == NULL || frontier == 0) return;
+    coalesce_until(frontier);
+}
+
 void* afalloc(size_t size) {
+    /* reject before rounding: (size + 7) wraps to 0 for sizes near SIZE_MAX */
+    if (size == 0 || size > MAX_REQUEST) return NULL;
+    size = (size + 7) & ~(size_t)7;
+    if (size > MAX_REQUEST) return NULL;
+
     if (mem == NULL) {
-        mem = (unsigned char*)chunk();
+        void *base = chunk();
+        if (base == MAP_FAILED) return NULL;
+        mem = (unsigned char*)base;
     }
-    if (size == 0) return NULL;
-    
-    size = (size + 7) & ~7; 
-    int curr_index = 0;
-    
-    while (curr_index < 1024 * 1024) {
+    size_t curr_index = lowest_free;
+    int seen_free = 0;      /* a free block was passed, so lowest_free must stay put */
+
+    while (curr_index < REGION_SIZE) {
         if (curr_index == frontier) {
-            if (frontier + sizeof(struct metadata) + size > 1024*1024) {
+            if (frontier + sizeof(struct metadata) + size > REGION_SIZE) {
                 return NULL;
             }
             struct metadata *head = (struct metadata*)(mem + frontier);
             head->size = size;
             head->magic = 0xAFA2BABA;
             head->free = 0;
-            
+
             frontier += sizeof(struct metadata) + size;
+            if (!seen_free) lowest_free = frontier;
             return (void*)((unsigned char*)head + sizeof(struct metadata));
         } else {
             struct metadata *isIt = (struct metadata*)(mem + curr_index);
-            
+
             if (isIt->magic == 0xAFA2BABA) {
                 if (isIt->free == 1 && isIt->size >= size) {
+                    size_t after = curr_index + sizeof(struct metadata) + size;
                     if (isIt->size >= size + sizeof(struct metadata) + 8) {
                         struct metadata *yeni_blok = (struct metadata*)((unsigned char*)isIt + sizeof(struct metadata) + size);
                         yeni_blok->size = isIt->size - size - sizeof(struct metadata);
                         yeni_blok->magic = 0xAFA2BABA;
                         yeni_blok->free = 1;
-                        
+
                         isIt->size = size;
+                    } else {
+                        after = curr_index + sizeof(struct metadata) + isIt->size;
                     }
                     isIt->free = 0;
+                    /* the first free block was just used: the remainder (if
+                       any) starts at `after`, and everything before is in use */
+                    if (!seen_free) lowest_free = after;
                     return (void*)((unsigned char*)isIt + sizeof(struct metadata));
                 } else {
+                    if (isIt->free == 1) seen_free = 1;
                     curr_index += sizeof(struct metadata) + isIt->size;
+                    if (!seen_free) lowest_free = curr_index;
                 }
             } else {
                 return NULL;
@@ -94,19 +123,20 @@ void f_free(void *ptr) {
 
     struct metadata *head = (struct metadata*)((unsigned char*)ptr - sizeof(struct metadata));
     if (head->magic == 0xAFA2BABA) {
+        size_t offset = (size_t)((unsigned char*)head - mem);
         head->free = 1;
-        f_coalescing();
+        if (offset < lowest_free) lowest_free = offset;
+        coalesce_until(offset);
     }
 }
 
 void reset_region() {
     if (mem == NULL) return;
-    
+
     struct metadata *start = (struct metadata*)mem;
     start->size = (1024 * 1024) - sizeof(struct metadata);
     start->magic = 0xAFA2BABA;
     start->free = 1;
     frontier = 0;
+    lowest_free = 0;
 }
-
-

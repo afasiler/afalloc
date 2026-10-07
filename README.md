@@ -72,6 +72,11 @@ clang, and `make valgrind`.
 - `mmap/test_threads.c`: 8 threads allocating and freeing from both pools.
   With the lock compiled out the test no longer completes.
 
+`make bench-compare` runs a wider comparison of libc `malloc`/`free` against
+every allocator in the tree (small, mixed and 64 KiB to 1 MiB blocks, latency
+tail, alloc/free churn). Results and caveats are in
+[`bench/RESULTS.md`](bench/RESULTS.md).
+
 Valgrind does not instrument `mmap`'d regions, so it adds little beyond ASan
 here; ASan's redzones are the real overrun check.
 
@@ -112,11 +117,17 @@ comparison. Run its tests with `make test` (`mmap/test.c`).
 - **Magic number:** verified on `f_free()` and during traversal so foreign
   pointers and damaged headers are detected.
 - **First-fit with splitting** over an implicit list, with a bump frontier.
-- **Forward coalescing** in `f_free()`.
+  A `lowest_free` hint (a block boundary before which everything is in use)
+  keeps allocation at the frontier O(1) instead of walking the whole list.
+- **Forward coalescing** in `f_free()`, bounded to the range from `lowest_free`
+  up to the freed block rather than the whole region.
+- **Safe failure:** zero-size, oversized (including `SIZE_MAX`, which used to
+  wrap to a 0-byte block when rounded) and `MAP_FAILED` all return `NULL`.
 
 ```c
 void *afalloc(size_t size);
 void  f_free(void *ptr);
+void  f_coalescing(void);   // merge adjacent free blocks (f_free already does it)
 void  reset_region(void);
 ```
 
@@ -158,8 +169,8 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
 - **Not verified on 32-bit hardware.** The header layout is designed for
   32-bit ARM, but the code has only been built and tested on 64-bit x86-64 Linux.
 - **`mmap_allocator.c` assumes a 64-bit header** (12 bytes on 32-bit, which
-  breaks 8-byte alignment), has O(n) first-fit and forward-only coalescing,
-  and does not check for `MAP_FAILED`.
+  breaks 8-byte alignment), has O(n) first-fit once fragmented (about 400 ns
+  per op in the churn benchmark) and forward-only coalescing.
 - **Fresh chunks fault on first touch**, which shows up in tail latency (see
   the benchmark).
 
