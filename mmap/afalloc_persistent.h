@@ -9,6 +9,10 @@
    Every public function is thread-safe (a spinlock guards the allocator state)
    unless the library is built with -DAFA_NO_LOCK. */
 
+/* Every block carries this many bytes of header in front of the user pointer;
+   the largest request is the chunk size minus this. */
+#define AFA_HEADER_SIZE 8
+
 void *afalloc(size_t size);
 void *afalloc_persistent(size_t size);
 
@@ -25,6 +29,12 @@ void  afa_reset(void);
 /* afa_reset() plus munmap() of every scratch chunk, returning the memory to
    the OS. The next afalloc() maps again. */
 void  afa_trim(void);
+
+/* Map and fault in the first `scratch_chunks` and `persistent_chunks` chunks up
+   front (at most 10 each) so later allocations never call mmap or take a page
+   fault on first touch: deterministic latency for real-time use. Returns 0, or
+   -1 if a mapping failed (chunks mapped so far stay mapped). */
+int   afa_prefault(unsigned scratch_chunks, unsigned persistent_chunks);
 
 /* Unmap both pools. Invalidates every pointer ever returned. */
 void  afa_destroy(void);

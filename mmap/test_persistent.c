@@ -9,7 +9,7 @@
 #define AFA_SIZE ((size_t)1024 * 1024)
 #endif
 #define CHUNK ((size_t)AFA_SIZE)
-#define HEADER (2 * sizeof(size_t))
+#define HEADER ((size_t)AFA_HEADER_SIZE)
 #define MAX_REQ (CHUNK - HEADER)
 #define POOL_CHUNKS 10
 
@@ -158,6 +158,29 @@ static void test_trim_and_destroy(void){
     afa_destroy();
 }
 
+static void test_prefault(void){
+    afa_destroy();
+    assert(afa_prefault(2, 1) == 0);
+    unsigned char *p = afalloc(100);
+    unsigned char *q = afalloc_persistent(100);
+    assert(p && q);
+    memset(p, 1, 100);
+    memset(q, 2, 100);
+    assert(afa_prefault(2, 1) == 0);            /* already mapped: no-op */
+    assert(p[99] == 1 && q[99] == 2);
+    afa_destroy();
+}
+
+static void test_foreign_pointer_ignored(void){
+    unsigned char fake[64] = {0};
+    afree(fake + 32);                           /* no header magic: ignored */
+    unsigned char *p = afalloc(32);
+    assert(p != NULL);
+    afree(p + 8);                               /* interior pointer: not a header */
+    assert(afalloc(32) != p + 8);
+    afa_reset();
+}
+
 int main(void){
     test_basic();
     test_oversized_does_not_poison();
@@ -168,6 +191,8 @@ int main(void){
     test_persistent_chaining();
     test_free_lists();
     test_trim_and_destroy();
+    test_prefault();
+    test_foreign_pointer_ignored();
     puts("test_persistent: all tests passed");
     return 0;
 }

@@ -22,6 +22,9 @@ $(BUILD)/stress: mmap/stress.c $(PERSIST) $(PHDR) | $(BUILD)
 $(BUILD)/test_mmap: mmap/test.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) mmap/test.c mmap/mmap_allocator.c -o $@
 
+$(BUILD)/test_persistent_internal: mmap/test_persistent_internal.c $(PERSIST) $(PHDR) | $(BUILD)
+	$(CC) $(CFLAGS) $(SAN) mmap/test_persistent_internal.c -o $@
+
 $(BUILD)/stress_gp: mmap/stress_gp.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) mmap/stress_gp.c mmap/mmap_allocator.c -o $@
 
@@ -44,10 +47,11 @@ $(BUILD)/stress_plain: mmap/stress.c $(PERSIST) $(PHDR) | $(BUILD)
 $(BUILD)/bench: mmap/bench.c $(PERSIST) $(PHDR) | $(BUILD)
 	$(CC) -O2 -Wall -Wextra mmap/bench.c $(PERSIST) -o $@
 
-test: $(BUILD)/test_persistent $(BUILD)/stress $(BUILD)/test_mmap \
+test: $(BUILD)/test_persistent $(BUILD)/test_persistent_internal $(BUILD)/stress $(BUILD)/test_mmap \
       $(BUILD)/stress_gp $(BUILD)/test_arena_rv1103 $(BUILD)/test_arena_malloc \
       $(BUILD)/stress_arena_malloc
 	$(BUILD)/test_persistent
+	$(BUILD)/test_persistent_internal
 	$(BUILD)/stress
 	$(BUILD)/test_mmap
 	$(BUILD)/stress_gp

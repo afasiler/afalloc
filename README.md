@@ -35,8 +35,19 @@ released block by block (`afree`) or in bulk (`afa_reset`).
   chunk (including `SIZE_MAX` and sizes that overflow when rounded) returns
   `NULL` without mapping memory or changing state. `mmap` failure returns
   `NULL`. `afree(NULL)` and a second `afree` of the same block are ignored.
-- **Alignment:** the block header is two `size_t` fields (a multiple of 8 bytes
-  on 32- and 64-bit targets), so returned pointers are 8-byte aligned.
+- **Alignment and overhead:** every block has one 8-byte header word (a magic
+  value, the size class and the pool/free state), on 32- and 64-bit targets
+  alike, so returned pointers are 8-byte aligned and a 16-byte allocation costs
+  24 bytes. Because the class is stored, `afree()` never recomputes it.
+- **Fast path:** the current chunk is a plain bump window (`cur`, `left`); the
+  slow path only runs when a chunk fills. When the allocator moves on to a new
+  chunk, the unused tail of the old one is carved into free blocks instead of
+  being lost, and a failed `mmap` leaves the old chunk usable.
+- **Deterministic latency:** `afa_prefault(scratch_chunks, persistent_chunks)`
+  maps and faults in chunks up front (`MAP_POPULATE` on Linux, one write per
+  page elsewhere); build with `-DAFA_PREFAULT` to do it for every chunk as it
+  is mapped. On macOS the worst first-use latency of 1,000 fresh 4 KB
+  allocations dropped from 13-36 us to about 1.4 us.
 
 **API** (`mmap/afalloc_persistent.h`)
 
@@ -47,6 +58,7 @@ void  afree(void *ptr);                // release a block from either pool
 void  afa_reset(void);                 // rewind scratch, drop scratch free lists
 void  afa_trim(void);                  // reset + munmap scratch chunks
 void  afa_destroy(void);               // unmap everything
+int   afa_prefault(unsigned s, unsigned p); // map + fault in chunks now
 ```
 
 Pointers are invalid after the pool they came from is reset, trimmed or
@@ -175,8 +187,8 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
   that frees many small blocks and then asks for large ones will not reuse that
   memory until `afa_reset()`.
 - **Scratch tail waste:** when a request doesn't fit the remainder of a chunk,
-  the rest of that chunk is skipped (until the next reset, apart from blocks
-  later returned through `afree`).
+  the rest of that chunk is carved into free blocks, but free lists do not split
+  blocks, so only later requests of those same size classes reuse it.
 - **The lock is a spinlock** held across `mmap`. Under heavy contention on a
   single core, waiters `sched_yield()`; there is no priority inheritance, so it
   is not suitable for hard real-time threads of differing priority.
@@ -186,13 +198,14 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
 - **`mmap_allocator.c` assumes a 64-bit header** (12 bytes on 32-bit, which
   breaks 8-byte alignment), has O(n) first-fit once fragmented (about 400 ns
   per op in the churn benchmark) and forward-only coalescing.
-- **Fresh chunks fault on first touch**, which shows up in tail latency (see
-  the benchmark).
+- **Fresh chunks fault on first touch** unless you call `afa_prefault()` or build
+  with `-DAFA_PREFAULT`.
+- **Apple clang's machine outliner slows the hot path** (it turns pieces of
+  `afalloc` into calls). Build with `-mno-outline` when benchmarking on macOS
+  arm64; `make bench-compare` and `make bench-sizes` do this automatically.
 
 ## Possible future work
 
-- Pre-fault chunks at startup (`MAP_POPULATE` / `mlock`) to remove first-touch
-  latency.
 - Backward coalescing for the free lists.
 - Bring `mmap_allocator.c` up to the same safety level, or retire it.
 - Run the test suite on real RV1103 hardware.

@@ -12,6 +12,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD = os.path.join(ROOT, "build")
 CC = os.environ.get("CC", "cc")
 CFLAGS = ["-O2", "-Wall", "-Wextra", "-Wno-unused-function"]
+# Apple clang outlines pieces of the hot path into calls; turn that off when the
+# compiler knows the flag so the numbers measure the allocator, not the outliner.
+if subprocess.run([CC, "-mno-outline", "-fsyntax-only", "-x", "c", "/dev/null"],
+                  capture_output=True).returncode == 0:
+    CFLAGS.append("-mno-outline")
 
 BACKENDS = [("persist", "BE_PERSIST", "mmap/afalloc_persistent.c"),
             ("arena", "BE_ARENA", "arena_allocator/rv1103.c"),
