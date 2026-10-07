@@ -4,47 +4,34 @@ but it can work through all mcu and low level computer to get max performance wi
 */
 
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <stddef.h>
 
-#define MEM_SIZE (1024*1024)
-unsigned char memory[MEM_SIZE];
+#define MEM_SIZE ((size_t)1024 * 1024)
+
+/* two size_t fields keep the header a multiple of 8 bytes on 32-bit and
+   64-bit targets, so user pointers stay 8-byte aligned */
 struct metadata{
-    int size;
-    int isfree;
+    size_t size;
+    size_t isfree;
 };
 
-int frontier = 0;
+static unsigned char memory[MEM_SIZE] __attribute__((aligned(8)));
+static size_t frontier = 0;
 
-void *afalloc(int size){
-    if (size <= 0) return NULL; 
-    size = (size + 7) & ~7;
+void *afalloc(size_t size){
+    if (size == 0 || size > MEM_SIZE - sizeof(struct metadata)) return NULL;
+    size = (size + 7) & ~(size_t)7;
 
-    int cur_offset = (frontier == -1) ? 0 : frontier; 
-    if((cur_offset + size + sizeof(struct metadata)) <= MEM_SIZE){
-        if(frontier == -1){
-            struct metadata *header = (struct metadata*)&memory;
-            header->isfree = 0;
-            header->size = size;
-            frontier = sizeof(struct metadata) + header->size;
-            void *free_void = (void*)(header + 1);
-            return free_void;
-        }
-        else{
-            struct metadata *header = (struct metadata *)&memory[frontier];
-            void *free_void = (void*)(header + 1);
-            header->size = size;
-            header->isfree = 0;
-            frontier += sizeof(struct metadata) + size;
-            return free_void;
-        }
-    }
-    return NULL;
+    if (MEM_SIZE - frontier < sizeof(struct metadata)) return NULL;
+    if (size > MEM_SIZE - frontier - sizeof(struct metadata)) return NULL;
+
+    struct metadata *header = (struct metadata *)&memory[frontier];
+    header->size = size;
+    header->isfree = 0;
+    frontier += sizeof(struct metadata) + size;
+    return (void*)(header + 1);
 }
 
-void afa_reset(){
-    frontier = -1;
-    struct metadata *header = (struct metadata*)memory;
-    header->isfree = 1;
-    header->size = MEM_SIZE - sizeof(struct metadata);
+void afa_reset(void){
+    frontier = 0;
 }

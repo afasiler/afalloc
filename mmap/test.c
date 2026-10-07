@@ -1,64 +1,89 @@
+#undef NDEBUG
+#include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "mmap_allocator.h"
+
+/* tests for the general-purpose allocator in mmap_allocator.c; they assume the
+   16-byte header of a 64-bit target */
+
 struct node{
     int number;
     struct node* next;
-    //12 bayt
 };
 struct node2{
     size_t number;
     struct node* next;
-    // 16 bayt
 };
-void* pntr;
-int main(void){
 
-    pntr = afalloc(0); //expected to only create metada with size 0 || terminal output: 0x100b30010 
-    printf("\n%p", pntr);
-    f_free(pntr);
+#define REGION (1024 * 1024)
+#define HEADER 16
+
+static void test_zero_size(void){
+    assert(afalloc(0) == NULL);        /* no block is created for size 0 */
+    f_free(NULL);                      /* must be a harmless no-op */
     reset_region();
+}
 
-    pntr = afalloc(1024*1024-16); //expected to fail because 16 bayts already occupied || terminal output: 0x100b30020 but must be 0x0 null || fixed by adding a new boundary constraint. 
-    printf("\n%p", pntr);
-    f_free(pntr);
+static void test_region_bounds(void){
+    assert(afalloc(REGION) == NULL);
+    assert(afalloc(REGION - HEADER + 1) == NULL);
+    void *p = afalloc(REGION - HEADER);   /* exactly fills the region */
+    assert(p != NULL);
+    assert(afalloc(1) == NULL);
+    f_free(p);
+    reset_region();
+}
 
-    for (int i = 0; i < 1024; i++) { // filling up memory
-        pntr = afalloc(1008); // header is 16 bayt and i choose the equal size of void pointer to be 1008. this way there shouldnt be any fragmentation. 
-        printf("\n%d\t%p", i,pntr);         
+static void test_fill_region(void){
+    void *first = NULL;
+    for (int i = 0; i < 1024; i++) {      /* 1024 * (1008 + 16 header) == 1 MiB */
+        void *p = afalloc(1008);
+        assert(p != NULL);
+        if (i == 0) first = p;
     }
-    pntr = afalloc(1008); //expected to be null || terminal output: 0x0 == null
-    printf("\n%p", pntr); 
-    
-    f_free(pntr);
+    assert(afalloc(1008) == NULL);
     reset_region();
+    assert(afalloc(1008) == first);       /* reset starts over at the base */
+    reset_region();
+}
 
-    struct node* first = (struct node*)afalloc(sizeof(struct node));
-    first->number = 15;
+static void test_linked_list_and_reuse(void){
+    struct node *first = afalloc(sizeof(struct node));
+    struct node *second = afalloc(sizeof(struct node));
+    struct node *third = afalloc(sizeof(struct node));
+    assert(first && second && third);
+    assert((uintptr_t)first % 8 == 0);
+    assert((unsigned char*)second == (unsigned char*)first + sizeof(struct node) + HEADER);
 
-    struct node* second = (struct node*)afalloc(sizeof(struct node));
-    first->next = second;
-    second->number = 30;
-
-    struct node* third = (struct node*)afalloc(sizeof(struct node));
-    second->next = third;
-    third->number = 45;
-    third->next = NULL;
-
-    printf("\n%p", first); // terminal output 0x100b30010
-    printf("\n%d", first->number);
-    printf("\n%p", second); //terminal output 0x100b30030
-    printf("\n%d", second->number);
-    printf("\n%p", third); //terminal output 0x100b30050
-    printf("\n%d", third->number);
+    first->number = 15;  first->next = second;
+    second->number = 30; second->next = third;
+    third->number = 45;  third->next = NULL;
+    assert(first->next->next->number == 45);
 
     f_free(first);
-    f_free(second);
+    f_free(second);                       /* adjacent free blocks coalesce */
 
-    struct node2* first2 = (struct node2*)afalloc(sizeof(struct node2));
-    first2->number = 100;
-    first2->next = third;
-    printf("\n%p", first2);//terminal output 0x100b30010
-    printf("\n%zu", first2->number);
-    printf("\n%p", third); //terminal output 0x100b30050
-    printf("\n%d", third->number);
+    struct node2 *big = afalloc(sizeof(struct node2) + 16);
+    assert((void*)big == (void*)first);   /* fits only in the merged block */
+    big->number = 100;
+    assert(third->number == 45);          /* neighbour untouched */
+    reset_region();
+}
+
+static void test_free_rejects_foreign_pointer(void){
+    unsigned char fake[64];
+    memset(fake, 0, sizeof fake);
+    f_free(fake + 32);                    /* no magic header -> ignored */
+}
+
+int main(void){
+    test_zero_size();
+    test_region_bounds();
+    test_fill_region();
+    test_linked_list_and_reuse();
+    test_free_rejects_foreign_pointer();
+    puts("test_mmap: all tests passed");
+    return 0;
 }
