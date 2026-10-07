@@ -162,3 +162,60 @@ Single-op timing; the clock ticks coarsely (see timer floor), so trust the tail,
 |---|---:|---:|---:|---:|---:|
 | ns/op | 26.2 | 10.4 | n/a | 193.0 | 403.7 |
 | failed allocs | 0.0 | 0.0 | n/a | 0.0 | 0.0 |
+
+## Large blocks across chunk sizes (1 MiB, 4 MiB, 16 MiB, 1 GiB, 2 GiB)
+
+Each cell is `alloc us / release us / memset-every-byte ms` per block, median of the process runs; `NULL` means every request failed. Request sizes are exact byte counts; `chunk size - 16 B` is the largest block that chunk can hold (arena_malloc needs 32 B for header and footer, so it fails that row by design). 2 GiB is included so a 1 GiB request can fit. One block is live at a time.
+
+
+### Chunk / region size 1 MiB (`-DAFA_SIZE=1048576`)
+
+| request | malloc/free | persist | arena (rv1103) | arena_malloc | gp |
+|---|---:|---:|---:|---:|---:|
+| 1 MiB | 0.08 / 0.62 / 0.03 | NULL | NULL | NULL | NULL |
+| 4 MiB | 0.09 / 0.51 / 0.12 | NULL | NULL | NULL | NULL |
+| 16 MiB | 0.11 / 0.45 / 0.49 | NULL | NULL | NULL | NULL |
+| 1 GiB | 0.79 / 1.30 / 27.97 | NULL | NULL | NULL | NULL |
+| chunk size - 16 B | n/a | 0.01 / 0.57 / 0.02 | 0.01 / 0.01 / 0.02 | NULL | 0.01 / 0.01 / 0.02 |
+
+### Chunk / region size 4 MiB (`-DAFA_SIZE=4194304`)
+
+| request | malloc/free | persist | arena (rv1103) | arena_malloc | gp |
+|---|---:|---:|---:|---:|---:|
+| 1 MiB | 0.08 / 0.62 / 0.03 | 0.02 / 0.56 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 |
+| 4 MiB | 0.09 / 0.51 / 0.12 | NULL | NULL | NULL | NULL |
+| 16 MiB | 0.11 / 0.45 / 0.49 | NULL | NULL | NULL | NULL |
+| 1 GiB | 0.79 / 1.30 / 27.97 | NULL | NULL | NULL | NULL |
+| chunk size - 16 B | n/a | 0.02 / 0.50 / 0.11 | 0.01 / 0.01 / 0.12 | NULL | 0.01 / 0.01 / 0.09 |
+
+### Chunk / region size 16 MiB (`-DAFA_SIZE=16777216`)
+
+| request | malloc/free | persist | arena (rv1103) | arena_malloc | gp |
+|---|---:|---:|---:|---:|---:|
+| 1 MiB | 0.08 / 0.62 / 0.03 | 0.02 / 0.43 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 |
+| 4 MiB | 0.09 / 0.51 / 0.12 | 0.02 / 0.33 / 0.12 | 0.01 / 0.01 / 0.11 | 0.01 / 0.01 / 0.12 | 0.01 / 0.01 / 0.11 |
+| 16 MiB | 0.11 / 0.45 / 0.49 | NULL | NULL | NULL | NULL |
+| 1 GiB | 0.79 / 1.30 / 27.97 | NULL | NULL | NULL | NULL |
+| chunk size - 16 B | n/a | 0.02 / 0.36 / 0.49 | 0.01 / 0.01 / 0.49 | NULL | 0.01 / 0.02 / 0.49 |
+
+### Chunk / region size 1 GiB (`-DAFA_SIZE=1073741824`)
+
+| request | malloc/free | persist | arena (rv1103) | arena_malloc | gp |
+|---|---:|---:|---:|---:|---:|
+| 1 MiB | 0.08 / 0.62 / 0.03 | 0.02 / 0.48 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.02 |
+| 4 MiB | 0.09 / 0.51 / 0.12 | 0.02 / 0.40 / 0.12 | 0.01 / 0.01 / 0.12 | 0.01 / 0.01 / 0.12 | 0.01 / 0.01 / 0.12 |
+| 16 MiB | 0.11 / 0.45 / 0.49 | 0.02 / 0.38 / 0.49 | 0.01 / 0.01 / 0.49 | 0.01 / 0.02 / 0.49 | 0.01 / 0.02 / 0.49 |
+| 1 GiB | 0.79 / 1.30 / 27.97 | NULL | NULL | NULL | NULL |
+| chunk size - 16 B | n/a | 0.06 / 0.16 / 28.13 | 0.02 / 0.16 / 28.12 | NULL | 0.07 / 0.10 / 28.38 |
+
+### Chunk / region size 2 GiB (`-DAFA_SIZE=2147483648`)
+
+| request | malloc/free | persist | arena (rv1103) | arena_malloc | gp |
+|---|---:|---:|---:|---:|---:|
+| 1 MiB | 0.08 / 0.62 / 0.03 | 0.02 / 0.55 / 0.02 | 0.01 / 0.01 / 0.03 | 0.01 / 0.01 / 0.02 | 0.01 / 0.01 / 0.03 |
+| 4 MiB | 0.09 / 0.51 / 0.12 | 0.02 / 0.49 / 0.12 | 0.01 / 0.01 / 0.12 | 0.01 / 0.01 / 0.12 | 0.01 / 0.01 / 0.12 |
+| 16 MiB | 0.11 / 0.45 / 0.49 | 0.02 / 0.36 / 0.49 | 0.01 / 0.02 / 0.50 | 0.01 / 0.01 / 0.49 | 0.01 / 0.01 / 0.49 |
+| 1 GiB | 0.79 / 1.30 / 27.97 | 0.21 / 0.18 / 28.10 | 0.03 / 0.03 / 28.11 | 0.04 / 0.08 / 28.20 | 0.04 / 0.07 / 28.12 |
+| chunk size - 16 B | n/a | 0.39 / 0.29 / 56.26 | 0.03 / 0.11 / 56.63 | NULL | 0.01 / 0.21 / 56.44 |
+
+Reading the table: a request succeeds only when it is at most `chunk size - 16 B` (`arena_malloc`: `- 32 B`), so a 1 GiB request needs a chunk larger than 1 GiB (the 2 GiB build). In the 1 GiB build the largest block is 1 GiB - 16 B. Allocation and release stay constant-time at every size (`alloc` 0.01-0.07 us for the bump allocators against 0.08-0.8 us for malloc); the memset column is memory bandwidth (about 38 GB/s here) and identical across allocators. `persist` release is the 0.3-0.55 us outlier already noted above. The 2 GiB `chunk size - 16 B` memset is twice the 1 GiB one for the same reason.

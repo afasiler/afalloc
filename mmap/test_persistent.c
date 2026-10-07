@@ -5,7 +5,10 @@
 #include <string.h>
 #include "afalloc_persistent.h"
 
-#define CHUNK ((size_t)1024 * 1024)
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define CHUNK ((size_t)AFA_SIZE)
 #define HEADER (2 * sizeof(size_t))
 #define MAX_REQ (CHUNK - HEADER)
 #define POOL_CHUNKS 10

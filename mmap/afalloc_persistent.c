@@ -18,7 +18,11 @@ static void lock_release(void){
 #define lock_release() ((void)0)
 #endif
 
-#define MEM_SIZE ((size_t)1024 * 1024)
+/* Chunk/region size in bytes; build with -DAFA_SIZE=<bytes> to change it. */
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define MEM_SIZE ((size_t)AFA_SIZE)
 #define MAX_CHUNKS 10
 
 #define STATE_FREE       ((size_t)0xAFA2F4EE)
@@ -39,7 +43,9 @@ struct metadata{
    power of two (at most 25% internal waste) up to one chunk. */
 #define SMALL_LIMIT 256
 #define SMALL_CLASSES (SMALL_LIMIT / 8)
-#define NUM_CLASSES 80
+/* enough classes for any chunk size: class indices stay below
+   SMALL_CLASSES + 4 * (bits in size_t - 8) */
+#define NUM_CLASSES (SMALL_CLASSES + 4 * ((int)(sizeof(size_t) * 8) - 8))
 
 struct free_block{
     struct free_block *next;   /* lives in the user area of a freed block */
@@ -54,11 +60,12 @@ typedef struct {
     chunk_t chunks[MAX_CHUNKS];
     int current;
     struct free_block *free_lists[NUM_CLASSES];
+    int max_class;             /* highest class index that ever held a free block */
     size_t used_state;
 } pool_t;
 
-static pool_t scratch_pool    = { .used_state = STATE_SCRATCH };
-static pool_t persistent_pool = { .used_state = STATE_PERSISTENT };
+static pool_t scratch_pool    = { .max_class = -1, .used_state = STATE_SCRATCH };
+static pool_t persistent_pool = { .max_class = -1, .used_state = STATE_PERSISTENT };
 
 /* Maps a request to its class index and the exact block size of that class.
    Requests above MAX_REQUEST must be rejected by the caller first. */
@@ -124,7 +131,8 @@ static void *pool_alloc(pool_t *pool, size_t size){
 
 static void pool_reset(pool_t *pool){
     for (int i = 0; i < MAX_CHUNKS; i++) pool->chunks[i].frontier = 0;
-    for (int i = 0; i < NUM_CLASSES; i++) pool->free_lists[i] = NULL;
+    for (int i = 0; i <= pool->max_class; i++) pool->free_lists[i] = NULL;
+    pool->max_class = -1;
     pool->current = 0;
 }
 
@@ -165,6 +173,7 @@ void afree(void *ptr){
         struct free_block *fb = (struct free_block *)ptr;
         fb->next = pool->free_lists[idx];
         pool->free_lists[idx] = fb;
+        if (idx > pool->max_class) pool->max_class = idx;
         h->state = STATE_FREE;
     }
     lock_release();

@@ -6,7 +6,11 @@ but it can work through all mcu and low level computer to get max performance wi
 
 #include <stddef.h>
 
-#define MEM_SIZE ((size_t)1024 * 1024)
+/* Chunk/region size in bytes; build with -DAFA_SIZE=<bytes> to change it. */
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define MEM_SIZE ((size_t)AFA_SIZE)
 
 /* two size_t fields keep the header a multiple of 8 bytes on 32-bit and
    64-bit targets, so user pointers stay 8-byte aligned */

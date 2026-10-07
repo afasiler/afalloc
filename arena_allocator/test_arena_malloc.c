@@ -5,7 +5,10 @@
 #include <string.h>
 #include "arena_malloc.h"
 
-#define ARENA ((size_t)1024 * 1024)
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define ARENA ((size_t)AFA_SIZE)
 #define OVERHEAD (4 * sizeof(size_t))   /* header + footer */
 
 static void test_bounds(void){

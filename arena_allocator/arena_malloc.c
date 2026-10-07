@@ -2,7 +2,11 @@
 #include <stddef.h>
 #include "arena_malloc.h"
 
-#define MEM_SIZE ((size_t)1024 * 1024)
+/* Chunk/region size in bytes; build with -DAFA_SIZE=<bytes> to change it. */
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define MEM_SIZE ((size_t)AFA_SIZE)
 static unsigned char memory[MEM_SIZE] __attribute__((aligned(8)));
 
 /* Both structs are a multiple of 8 bytes on 32- and 64-bit targets so every

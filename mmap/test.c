@@ -17,7 +17,10 @@ struct node2{
     struct node* next;
 };
 
-#define REGION (1024 * 1024)
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define REGION ((size_t)AFA_SIZE)
 #define HEADER 16
 
 static void test_zero_size(void){
@@ -43,7 +46,7 @@ static void test_region_bounds(void){
 
 static void test_fill_region(void){
     void *first = NULL;
-    for (int i = 0; i < 1024; i++) {      /* 1024 * (1008 + 16 header) == 1 MiB */
+    for (size_t i = 0; i < REGION / 1024; i++) {   /* each block is 1008 + 16 header == 1 KiB */
         void *p = afalloc(1008);
         assert(p != NULL);
         if (i == 0) first = p;

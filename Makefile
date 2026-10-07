@@ -7,7 +7,7 @@ BUILD   = build
 PERSIST = mmap/afalloc_persistent.c
 PHDR    = mmap/afalloc_persistent.h
 
-.PHONY: all test tsan valgrind bench bench-compare clean
+.PHONY: all test tsan valgrind bench bench-compare bench-sizes clean
 all: test
 
 $(BUILD):
@@ -66,6 +66,10 @@ bench: $(BUILD)/bench
 
 clean:
 	rm -rf $(BUILD)
+
+# 1 MiB .. 2 GiB chunk sizes; also: make test CFLAGS="-g -O1 -Wall -DAFA_SIZE=4194304ULL" BUILD=build_4m
+bench-sizes:
+	python3 bench/run_sizes.py
 
 # libc malloc vs every afalloc variant (-O2, no sanitizers); see bench/RESULTS.md
 bench-compare:

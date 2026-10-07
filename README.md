@@ -72,6 +72,14 @@ clang, and `make valgrind`.
 - `mmap/test_threads.c`: 8 threads allocating and freeing from both pools.
   With the lock compiled out the test no longer completes.
 
+**Chunk size.** Every allocator uses a 1 MiB chunk (arena) by default; build with
+`-DAFA_SIZE=<bytes>` to change it. `make test CFLAGS="-Wall -Wextra -g -O1
+-DAFA_SIZE=1073741824ULL" BUILD=build_1g` runs the whole suite with 1 GiB
+chunks (also tested at 4 MiB, 16 MiB and 2 GiB). The largest request is
+`AFA_SIZE - 16` bytes (`arena_malloc`: `AFA_SIZE - 32`); anything bigger returns
+`NULL`. `make bench-sizes` benchmarks 1 MiB, 4 MiB, 16 MiB and 1 GiB requests
+against each chunk size.
+
 `make bench-compare` runs a wider comparison of libc `malloc`/`free` against
 every allocator in the tree (small, mixed and 64 KiB to 1 MiB blocks, latency
 tail, alloc/free churn). Results and caveats are in

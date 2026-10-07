@@ -13,7 +13,11 @@ struct metadata {
     int free;
 };
 
-#define REGION_SIZE ((size_t)1024 * 1024)
+/* Chunk/region size in bytes; build with -DAFA_SIZE=<bytes> to change it. */
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+#define REGION_SIZE ((size_t)AFA_SIZE)
 #define MAX_REQUEST (REGION_SIZE - sizeof(struct metadata))
 
 /* Offset of a block boundary at or before every free block (== frontier when
@@ -23,7 +27,7 @@ struct metadata {
 static size_t lowest_free = 0;
 
 static void* chunk(void) {
-    return mmap(NULL, 1024 * 1024, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return mmap(NULL, REGION_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 }
 
 /* Merge adjacent free blocks, walking from lowest_free until the walk has
@@ -143,7 +147,7 @@ void reset_region(void) {
     if (mem == NULL) return;
 
     struct metadata *start = (struct metadata*)mem;
-    start->size = (1024 * 1024) - sizeof(struct metadata);
+    start->size = REGION_SIZE - sizeof(struct metadata);
     start->magic = 0xAFA2BABA;
     start->free = 1;
     frontier = 0;

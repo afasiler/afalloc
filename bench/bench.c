@@ -95,10 +95,11 @@ static int cmp_d(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
     return (x > y) - (x < y);
 }
-static double median(double *v, int n) {
+static double median_n(double *v, int n) {
     qsort(v, (size_t)n, sizeof *v, cmp_d);
     return v[n / 2];
 }
+#define median(v, n) median_n((v), (n))
 
 static void emit(const char *workload, const char *metric, double v) {
     printf("%s,%s,%s,%.3f\n", BE_NAME, workload, metric, v);
@@ -250,23 +251,27 @@ static void run_churn(void) {
 }
 #endif
 
-/* ---- large allocations: one block per iteration, up to 1 MiB ------------ */
+/* ---- large allocations: one block per iteration -------------------------- */
 
-/* 1000 iterations of alloc -> touch -> release for one block size (0 = random
-   size in 1..1 MiB-16 per iteration). A bump arena is a single 1 MiB region, so
-   1000 live blocks cannot coexist; each block is released before the next, which
-   is also how malloc is driven so the comparison stays like-for-like. */
-static void run_large(const char *name, size_t fixed) {
-    enum { ITERS = 1000 };
+#ifndef AFA_SIZE
+#define AFA_SIZE ((size_t)1024 * 1024)
+#endif
+
+/* `iters` iterations of alloc -> touch -> release for one block size (0 = random
+   size in 1..1 MiB-16 per iteration), `samples` timed samples after a warm-up.
+   A bump arena is a single region, so many live blocks cannot coexist; each
+   block is released before the next, which is also how malloc is driven so the
+   comparison stays like-for-like. */
+static void run_large(const char *name, size_t fixed, int iters, int samples) {
     const size_t max_req = 1024 * 1024 - HEADER;
-    for (int i = 0; i < ITERS; i++) sizes[i] = fixed ? fixed : 1 + rnd() % max_req;
+    for (int i = 0; i < iters; i++) sizes[i] = fixed ? fixed : 1 + rnd() % max_req;
 
-    double a[SAMPLES], ts[SAMPLES], tf[SAMPLES], r[SAMPLES];
+    double a[32], ts[32], tf[32], r[32];
     size_t fails = 0;
-    for (int smp = -1; smp < SAMPLES; smp++) {
+    for (int smp = -1; smp < samples; smp++) {
         uint64_t ta = 0, tts = 0, ttf = 0, tr = 0;
         size_t ok = 0;
-        for (int i = 0; i < ITERS; i++) {
+        for (int i = 0; i < iters; i++) {
             uint64_t t0 = now_ns();
             unsigned char *p = be_alloc(sizes[i]);
             uint64_t t1 = now_ns();
@@ -283,15 +288,26 @@ static void run_large(const char *name, size_t fixed) {
             tts += t2 - t1; ttf += t3 - t2; tr += t4 - t3;
         }
         if (smp < 0 || ok == 0) continue;
-        a[smp] = (double)ta / ITERS; ts[smp] = (double)tts / ok;
-        tf[smp] = (double)ttf / ok;  r[smp] = (double)tr / ok;
+        a[smp] = (double)ta / iters; ts[smp] = (double)tts / (double)ok;
+        tf[smp] = (double)ttf / (double)ok;  r[smp] = (double)tr / (double)ok;
     }
-    emit(name, "failed_allocs", (double)fails / SAMPLES);   /* per sample of 1000 */
-    if (fails == (size_t)SAMPLES * ITERS) return;           /* unsupported size */
-    emit(name, "alloc_ns", median(a, SAMPLES));
-    emit(name, "touch_sparse_ns", median(ts, SAMPLES));
-    emit(name, "touch_full_ns", median(tf, SAMPLES));
-    emit(name, "release_ns", median(r, SAMPLES));
+    emit(name, "failed_allocs", (double)fails / samples);   /* per sample */
+    if (fails == (size_t)samples * (size_t)iters) return;   /* unsupported size */
+    emit(name, "alloc_ns", median_n(a, samples));
+    emit(name, "touch_sparse_ns", median_n(ts, samples));
+    emit(name, "touch_full_ns", median_n(tf, samples));
+    emit(name, "release_ns", median_n(r, samples));
+}
+
+/* "big" suite: requests of 1 MiB, 4 MiB, 16 MiB and 1 GiB, plus the largest block
+   this build's AFA_SIZE chunk can hold. Run once per -DAFA_SIZE by run_sizes.py. */
+static void run_big(void) {
+    emit("config", "afa_size", (double)AFA_SIZE);
+    run_large("big_1MiB",   (size_t)1 << 20, 100, 5);
+    run_large("big_4MiB",   (size_t)4 << 20,  50, 5);
+    run_large("big_16MiB", (size_t)16 << 20,  20, 5);
+    run_large("big_1GiB",   (size_t)1 << 30,   4, 3);
+    run_large("big_chunk_max", (size_t)AFA_SIZE - HEADER, AFA_SIZE >= ((size_t)1 << 30) ? 4 : 20, 3);
 }
 
 /* ---- correctness gate: refuse to benchmark a broken allocator ----------- */
@@ -312,8 +328,9 @@ static void self_check(void) {
     be_release(ptrs, n);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     self_check();
+    if (argc > 1 && strcmp(argv[1], "big") == 0) { run_big(); return 0; }
     run_density();
 
     struct { const char *name; size_t sz; size_t n; int reps; } fixed[] = {
@@ -332,12 +349,12 @@ int main(void) {
     size_t n = fill_mixed();
     run_batch("mixed_sizes", n, 150);
 
-    run_large("large_64KiB",      64 * 1024);
-    run_large("large_256KiB",    256 * 1024);
-    run_large("large_512KiB",    512 * 1024);
-    run_large("large_max",  1024 * 1024 - HEADER);   /* largest block afalloc supports */
-    run_large("large_1MiB_exact", 1024 * 1024);      /* does not fit with a header */
-    run_large("large_random",                0);     /* uniform 1..1 MiB-16 */
+    run_large("large_64KiB",      64 * 1024, 1000, SAMPLES);
+    run_large("large_256KiB",    256 * 1024, 1000, SAMPLES);
+    run_large("large_512KiB",    512 * 1024, 1000, SAMPLES);
+    run_large("large_max",  1024 * 1024 - HEADER, 1000, SAMPLES);   /* largest block afalloc supports */
+    run_large("large_1MiB_exact", 1024 * 1024, 1000, SAMPLES);      /* does not fit with a header */
+    run_large("large_random",                0, 1000, SAMPLES);     /* uniform 1..1 MiB-16 */
 
     run_latency();
 #if BE_HAS_FREE
