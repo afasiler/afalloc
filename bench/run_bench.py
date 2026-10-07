@@ -11,15 +11,17 @@ BACKENDS = [  # name, define, sources
     ("malloc",  "BE_MALLOC",  []),
     ("persist", "BE_PERSIST", ["mmap/afalloc_persistent.c"]),
     ("arena",   "BE_ARENA",   ["arena_allocator/rv1103.c"]),
+    ("arenaf",  "BE_ARENAF",  ["arena_allocator/arena_malloc.c"]),
     ("gp",      "BE_GP",      ["mmap/mmap_allocator.c"]),
 ]
 LABEL = {"malloc": "malloc/free", "persist": "persist (mmap bump)",
-         "arena": "arena (rv1103)", "gp": "gp (mmap first-fit)"}
+         "arena": "arena (rv1103)", "arenaf": "arena_malloc (free)", "gp": "gp (mmap first-fit)"}
 
 def build_and_run(name, define, srcs, runs):
     os.makedirs(BUILD, exist_ok=True)
     exe = os.path.join(BUILD, "bench_" + name)
     cmd = [CC, *CFLAGS, "-D" + define, "-I" + os.path.join(ROOT, "mmap"),
+           "-I" + os.path.join(ROOT, "arena_allocator"),
            os.path.join(ROOT, "bench/bench.c"), *[os.path.join(ROOT, s) for s in srcs], "-o", exe]
     subprocess.run(cmd, check=True)
     out = []
@@ -111,7 +113,7 @@ def main():
     table("Interleaved alloc/free churn (256 live slots, 16..512 B), ns per op",
           [("ns/op", "churn_alloc_free", "ns_per_op"),
            ("failed allocs", "churn_alloc_free", "failed_allocs")],
-          "Bump allocators have no free, so they cannot run this workload.\n")
+          "`arena` (rv1103) has no free, so it cannot run this workload; `arenaf` runs out of memory here (see caveats), so ignore its ns/op.\n")
 
 if __name__ == "__main__":
     main()

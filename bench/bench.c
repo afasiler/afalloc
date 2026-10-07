@@ -1,7 +1,7 @@
 /* Benchmark: libc malloc/free vs the afalloc variants.
  *
  * Every allocator exports the same `afalloc` symbol, so one backend is chosen
- * at compile time (-DBE_MALLOC, -DBE_PERSIST, -DBE_ARENA or -DBE_GP) and
+ * at compile time (-DBE_MALLOC, -DBE_PERSIST, -DBE_ARENA, -DBE_ARENAF or -DBE_GP) and
  * bench/run_bench.py builds and runs one binary per backend.
  *
  * Output: CSV lines "backend,workload,metric,value" on stdout.
@@ -26,9 +26,9 @@ static void be_release(void **p, size_t n) { for (size_t i = 0; i < n; i++) free
 #elif defined(BE_PERSIST)
 #include "afalloc_persistent.h"
 #define BE_NAME "persist"
-#define BE_HAS_FREE 0
+#define BE_HAS_FREE 1
 static inline void *be_alloc(size_t n) { return afalloc(n); }
-static inline void be_free(void *p) { (void)p; } /* unused: no individual free */
+static inline void be_free(void *p) { afree(p); }
 static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 
 #elif defined(BE_ARENA)
@@ -40,6 +40,14 @@ static inline void *be_alloc(size_t n) { return afalloc(n); }
 static inline void be_free(void *p) { (void)p; } /* unused: no individual free */
 static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 
+#elif defined(BE_ARENAF)
+#include "arena_malloc.h"
+#define BE_NAME "arenaf"
+#define BE_HAS_FREE 1
+static inline void *be_alloc(size_t n) { return afalloc(n); }
+static inline void be_free(void *p) { arena_free(p); }
+static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
+
 #elif defined(BE_GP)
 #include "mmap_allocator.h"
 #define BE_NAME "gp"
@@ -49,7 +57,7 @@ static inline void be_free(void *p) { f_free(p); }
 static void be_release(void **p, size_t n) { (void)p; (void)n; reset_region(); }
 
 #else
-#error "define one of BE_MALLOC BE_PERSIST BE_ARENA BE_GP"
+#error "define one of BE_MALLOC BE_PERSIST BE_ARENA BE_ARENAF BE_GP"
 #endif
 
 #define SAMPLES 9            /* timed samples per workload; median is reported */
