@@ -1,20 +1,22 @@
 CC      ?= cc
 CFLAGS  ?= -Wall -Wextra -g -O1
 SAN     = -fsanitize=address,undefined -fno-omit-frame-pointer
+TSAN    = -fsanitize=thread -fno-omit-frame-pointer
 BUILD   = build
 
 PERSIST = mmap/afalloc_persistent.c
+PHDR    = mmap/afalloc_persistent.h
 
-.PHONY: all test valgrind clean
+.PHONY: all test tsan valgrind bench clean
 all: test
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/test_persistent: mmap/test_persistent.c $(PERSIST) mmap/afalloc_persistent.h | $(BUILD)
+$(BUILD)/test_persistent: mmap/test_persistent.c $(PERSIST) $(PHDR) | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) mmap/test_persistent.c $(PERSIST) -o $@
 
-$(BUILD)/stress: mmap/stress.c $(PERSIST) mmap/afalloc_persistent.h | $(BUILD)
+$(BUILD)/stress: mmap/stress.c $(PERSIST) $(PHDR) | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) mmap/stress.c $(PERSIST) -o $@
 
 $(BUILD)/test_mmap: mmap/test.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(BUILD)
@@ -23,18 +25,35 @@ $(BUILD)/test_mmap: mmap/test.c mmap/mmap_allocator.c mmap/mmap_allocator.h | $(
 $(BUILD)/test_arena_rv1103: arena_allocator/test_rv1103.c arena_allocator/rv1103.c | $(BUILD)
 	$(CC) $(CFLAGS) $(SAN) arena_allocator/test_rv1103.c arena_allocator/rv1103.c -o $@
 
-# plain (unsanitized) build for valgrind
-$(BUILD)/stress_plain: mmap/stress.c $(PERSIST) | $(BUILD)
+$(BUILD)/test_arena_malloc: arena_allocator/test_arena_malloc.c arena_allocator/arena_malloc.c arena_allocator/arena_malloc.h | $(BUILD)
+	$(CC) $(CFLAGS) $(SAN) arena_allocator/test_arena_malloc.c arena_allocator/arena_malloc.c -o $@
+
+$(BUILD)/test_threads_tsan: mmap/test_threads.c $(PERSIST) $(PHDR) | $(BUILD)
+	$(CC) $(CFLAGS) $(TSAN) mmap/test_threads.c $(PERSIST) -o $@ -lpthread
+
+# plain (unsanitized) builds for valgrind and benchmarking
+$(BUILD)/stress_plain: mmap/stress.c $(PERSIST) $(PHDR) | $(BUILD)
 	$(CC) $(CFLAGS) mmap/stress.c $(PERSIST) -o $@
 
-test: $(BUILD)/test_persistent $(BUILD)/stress $(BUILD)/test_mmap $(BUILD)/test_arena_rv1103
+$(BUILD)/bench: mmap/bench.c $(PERSIST) $(PHDR) | $(BUILD)
+	$(CC) -O2 -Wall -Wextra mmap/bench.c $(PERSIST) -o $@
+
+test: $(BUILD)/test_persistent $(BUILD)/stress $(BUILD)/test_mmap \
+      $(BUILD)/test_arena_rv1103 $(BUILD)/test_arena_malloc
 	$(BUILD)/test_persistent
 	$(BUILD)/stress
 	$(BUILD)/test_mmap
 	$(BUILD)/test_arena_rv1103
+	$(BUILD)/test_arena_malloc
+
+tsan: $(BUILD)/test_threads_tsan
+	$(BUILD)/test_threads_tsan
 
 valgrind: $(BUILD)/stress_plain
 	valgrind --error-exitcode=1 --leak-check=full $(BUILD)/stress_plain
+
+bench: $(BUILD)/bench
+	$(BUILD)/bench
 
 clean:
 	rm -rf $(BUILD)

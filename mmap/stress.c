@@ -65,9 +65,24 @@ int main(void){
             check_all();
             check_no_overlap(scratch, n_scratch);
             check_no_overlap(persist, n_persist);
-            afa_reset();
+            if (op == 1) afa_trim(); else afa_reset();
             n_scratch = 0;
             resets++;
+        } else if (op < 10) {
+            /* free a random live block (checks its pattern first) */
+            if (n_scratch > 0) {
+                size_t i = next() % n_scratch;
+                check(&scratch[i]);
+                afree(scratch[i].p);
+                scratch[i] = scratch[--n_scratch];
+            }
+        } else if (op < 14) {
+            if (n_persist > 0) {
+                size_t i = next() % n_persist;
+                check(&persist[i]);
+                afree(persist[i].p);
+                persist[i] = persist[--n_persist];
+            }
         } else if (op < 30) {
             if (n_persist == MAX_LIVE) continue;
             size_t sz = 1 + next() % 512;

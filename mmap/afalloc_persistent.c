@@ -2,84 +2,189 @@
 #include <sys/mman.h>
 #include "afalloc_persistent.h"
 
+#ifndef AFA_NO_LOCK
+#include <sched.h>
+#include <stdatomic.h>
+static atomic_flag afa_lock = ATOMIC_FLAG_INIT;
+static void lock_acquire(void){
+    while (atomic_flag_test_and_set_explicit(&afa_lock, memory_order_acquire))
+        sched_yield();
+}
+static void lock_release(void){
+    atomic_flag_clear_explicit(&afa_lock, memory_order_release);
+}
+#else
+#define lock_acquire() ((void)0)
+#define lock_release() ((void)0)
+#endif
+
 #define MEM_SIZE ((size_t)1024 * 1024)
 #define MAX_CHUNKS 10
+
+#define STATE_FREE       ((size_t)0xAFA2F4EE)
+#define STATE_SCRATCH    ((size_t)0xAFA25C7A)
+#define STATE_PERSISTENT ((size_t)0xAFA29E55)
 
 /* Two size_t fields keep the header a multiple of 8 bytes on both 32-bit and
    64-bit targets, so user pointers stay 8-byte aligned. */
 struct metadata{
     size_t size;
-    size_t isfree;
+    size_t state;
 };
 
 #define HEADER_SIZE sizeof(struct metadata)
 #define MAX_REQUEST (MEM_SIZE - HEADER_SIZE)
+
+/* Size classes: every multiple of 8 up to 256 (32 classes), then 4 classes per
+   power of two (at most 25% internal waste) up to one chunk. */
+#define SMALL_LIMIT 256
+#define SMALL_CLASSES (SMALL_LIMIT / 8)
+#define NUM_CLASSES 80
+
+struct free_block{
+    struct free_block *next;   /* lives in the user area of a freed block */
+};
 
 typedef struct {
     unsigned char *memory;
     size_t frontier;
 } chunk_t;
 
-static chunk_t chunks[MAX_CHUNKS];
-static int chunk_count = 0;
-static int current_chunk = 1;       /* scratch starts at chunk 1, chunk 0 reserved for persistent */
-static size_t persistent_frontier = 0; /* separate frontier for chunk 0 */
+typedef struct {
+    chunk_t chunks[MAX_CHUNKS];
+    int current;
+    struct free_block *free_lists[NUM_CLASSES];
+    size_t used_state;
+} pool_t;
 
-static int ensure_chunk(int index){
-    if (index >= MAX_CHUNKS) return -1;
-    /* chunk 0 can be mapped after scratch chunks, so test the pointer rather
-       than chunk_count */
-    if (chunks[index].memory != NULL) return 0;
+static pool_t scratch_pool    = { .used_state = STATE_SCRATCH };
+static pool_t persistent_pool = { .used_state = STATE_PERSISTENT };
+
+/* Maps a request to its class index and the exact block size of that class.
+   Requests above MAX_REQUEST must be rejected by the caller first. */
+static int size_class(size_t size, size_t *rounded){
+    if (size <= SMALL_LIMIT) {
+        *rounded = (size + 7) & ~(size_t)7;
+        return (int)(*rounded / 8) - 1;
+    }
+    size_t v = size - 1;
+#if defined(__GNUC__)
+    int k = (int)(sizeof(unsigned long) * 8 - 1 - (unsigned)__builtin_clzl(v));
+#else
+    int k = 0;
+    while (v >> (k + 1)) k++;
+#endif
+    int shift = k - 2;
+    size_t step = v >> shift;                  /* 4..7 */
+    *rounded = (step + 1) << shift;
+    if (*rounded > MAX_REQUEST) *rounded = MAX_REQUEST;
+    return SMALL_CLASSES + (k - 8) * 4 + (int)(step - 4);
+}
+
+static int map_chunk(chunk_t *c){
     unsigned char *base = (unsigned char*)mmap(NULL, MEM_SIZE, PROT_READ | PROT_WRITE,
                                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) return -1;
-    chunks[index].memory = base;
-    chunks[index].frontier = 0;
-    if (index >= chunk_count) chunk_count = index + 1;
+    c->memory = base;
+    c->frontier = 0;
     return 0;
 }
 
-static void *alloc_in_chunk(unsigned char *mem, size_t *frontier_ptr, size_t size){
-    if (MEM_SIZE - *frontier_ptr < HEADER_SIZE) return NULL;
-    if (size > MEM_SIZE - *frontier_ptr - HEADER_SIZE) return NULL;
-    struct metadata *header = (struct metadata *)&mem[*frontier_ptr];
+static void *bump(chunk_t *c, size_t state, size_t size){
+    if (MEM_SIZE - c->frontier < HEADER_SIZE) return NULL;
+    if (size > MEM_SIZE - c->frontier - HEADER_SIZE) return NULL;
+    struct metadata *header = (struct metadata *)&c->memory[c->frontier];
     header->size = size;
-    header->isfree = 0;
-    *frontier_ptr += HEADER_SIZE + size;
+    header->state = state;
+    c->frontier += HEADER_SIZE + size;
     return (void*)(header + 1);
 }
 
-/* Rounds up to a multiple of 8. Returns 0 if the request can never fit in a
-   chunk, so callers reject it before touching any allocator state. */
-static size_t normalize(size_t size){
-    if (size == 0 || size > MAX_REQUEST) return 0;
-    size = (size + 7) & ~(size_t)7;
-    return size > MAX_REQUEST ? 0 : size;
-}
+static void *pool_alloc(pool_t *pool, size_t size){
+    if (size == 0 || size > MAX_REQUEST) return NULL;   /* never fits: no state touched */
+    size_t rounded;
+    int idx = size_class(size, &rounded);
 
-void *afalloc_persistent(size_t size){
-    size = normalize(size);
-    if (size == 0) return NULL;
-    if (ensure_chunk(0) != 0) return NULL;
-    return alloc_in_chunk(chunks[0].memory, &persistent_frontier, size);
-}
+    struct free_block *fb = pool->free_lists[idx];
+    if (fb) {
+        pool->free_lists[idx] = fb->next;
+        ((struct metadata *)fb - 1)->state = pool->used_state;
+        return fb;
+    }
 
-void *afalloc(size_t size){
-    size = normalize(size);
-    if (size == 0) return NULL;
-
-    while (current_chunk < MAX_CHUNKS) {
-        if (ensure_chunk(current_chunk) != 0) return NULL;
-        void *p = alloc_in_chunk(chunks[current_chunk].memory, &chunks[current_chunk].frontier, size);
+    while (pool->current < MAX_CHUNKS) {
+        chunk_t *c = &pool->chunks[pool->current];
+        if (c->memory == NULL && map_chunk(c) != 0) return NULL;
+        void *p = bump(c, pool->used_state, rounded);
         if (p) return p;
-        current_chunk++;
+        pool->current++;
     }
     return NULL;
 }
 
-void afa_reset(void){
-    for (int i = 1; i < chunk_count; i++) {
-        chunks[i].frontier = 0;
+static void pool_reset(pool_t *pool){
+    for (int i = 0; i < MAX_CHUNKS; i++) pool->chunks[i].frontier = 0;
+    for (int i = 0; i < NUM_CLASSES; i++) pool->free_lists[i] = NULL;
+    pool->current = 0;
+}
+
+static void pool_release(pool_t *pool){
+    for (int i = 0; i < MAX_CHUNKS; i++) {
+        if (pool->chunks[i].memory != NULL) {
+            munmap(pool->chunks[i].memory, MEM_SIZE);
+            pool->chunks[i].memory = NULL;
+        }
     }
-    current_chunk = 1;
+    pool_reset(pool);
+}
+
+void *afalloc_persistent(size_t size){
+    lock_acquire();
+    void *p = pool_alloc(&persistent_pool, size);
+    lock_release();
+    return p;
+}
+
+void *afalloc(size_t size){
+    lock_acquire();
+    void *p = pool_alloc(&scratch_pool, size);
+    lock_release();
+    return p;
+}
+
+void afree(void *ptr){
+    if (ptr == NULL) return;
+    lock_acquire();
+    struct metadata *h = (struct metadata *)ptr - 1;
+    pool_t *pool = NULL;
+    if (h->state == STATE_SCRATCH) pool = &scratch_pool;
+    else if (h->state == STATE_PERSISTENT) pool = &persistent_pool;
+    if (pool != NULL) {                    /* STATE_FREE / unknown: ignored */
+        size_t rounded;
+        int idx = size_class(h->size, &rounded);
+        struct free_block *fb = (struct free_block *)ptr;
+        fb->next = pool->free_lists[idx];
+        pool->free_lists[idx] = fb;
+        h->state = STATE_FREE;
+    }
+    lock_release();
+}
+
+void afa_reset(void){
+    lock_acquire();
+    pool_reset(&scratch_pool);
+    lock_release();
+}
+
+void afa_trim(void){
+    lock_acquire();
+    pool_release(&scratch_pool);
+    lock_release();
+}
+
+void afa_destroy(void){
+    lock_acquire();
+    pool_release(&scratch_pool);
+    pool_release(&persistent_pool);
+    lock_release();
 }
