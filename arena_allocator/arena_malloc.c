@@ -52,7 +52,7 @@ static struct metadata *arena_coalesce(struct metadata *header){
 }
 
 /* takes the pointer returned by afalloc(), like free() */
-void arena_free(void *ptr){
+void afree(void *ptr){
     if(ptr == NULL){
         return;
     }

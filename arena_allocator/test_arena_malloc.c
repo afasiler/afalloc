@@ -41,11 +41,11 @@ static void test_free_and_coalesce(void){
     assert(a && b && c && d);
     assert((uintptr_t)a % 8 == 0);
 
-    arena_free(NULL);
-    arena_free(a);
-    arena_free(a);                        /* double free is ignored */
-    arena_free(c);
-    arena_free(b);                        /* merges backward into a and forward into c */
+    afree(NULL);
+    afree(a);
+    afree(a);                        /* double free is ignored */
+    afree(c);
+    afree(b);                        /* merges backward into a and forward into c */
     memset(a, 0xEE, 32 + OVERHEAD + 32 + OVERHEAD + 32);   /* a..c is one 128+ byte block */
     memset(d, 0x11, 32);
     for (int i = 0; i < 32; i++) assert(d[i] == 0x11);
@@ -57,7 +57,7 @@ static void test_reuse(void){
     unsigned char *a = afalloc(256);
     unsigned char *b = afalloc(64);
     assert(a && b);
-    arena_free(a);
+    afree(a);
     unsigned char *c = afalloc(64);
     assert(c == a);                       /* first fit lands in the freed block */
     unsigned char *d = afalloc(64);       /* the split remainder is reusable too */
@@ -68,10 +68,10 @@ static void test_reuse(void){
     unsigned char *x = afalloc(100);
     unsigned char *y = afalloc(100);
     assert(x && y);
-    arena_free(y);
+    afree(y);
     assert(afalloc(100) == y);
-    arena_free(y);
-    arena_free(x);                        /* merges backward, then reaches the frontier */
+    afree(y);
+    afree(x);                        /* merges backward, then reaches the frontier */
     assert(afalloc(100) == x);
     afa_reset();
 
@@ -79,7 +79,7 @@ static void test_reuse(void){
     size_t max = ARENA - OVERHEAD;
     unsigned char *big = afalloc(max);
     assert(big != NULL && afalloc(1) == NULL);
-    arena_free(big);
+    afree(big);
     assert(afalloc(max) == big);
     afa_reset();
 }

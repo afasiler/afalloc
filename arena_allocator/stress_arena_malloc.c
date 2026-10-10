@@ -61,11 +61,11 @@ int main(void){
             resets++;
             struct live probe = { afalloc(64), 64, 7 };   /* region is empty again */
             assert(probe.p != NULL);
-            arena_free(probe.p);
+            afree(probe.p);
         } else if (op < 480 && n_live > 0) {
             size_t k = next() % n_live;
             check(&blocks[k]);
-            arena_free(blocks[k].p);
+            afree(blocks[k].p);
             blocks[k] = blocks[--n_live];
             frees++;
         } else if (n_live < MAX_LIVE) {

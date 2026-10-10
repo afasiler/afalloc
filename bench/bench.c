@@ -45,7 +45,7 @@ static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 #define BE_NAME "arenaf"
 #define BE_HAS_FREE 1
 static inline void *be_alloc(size_t n) { return afalloc(n); }
-static inline void be_free(void *p) { arena_free(p); }
+static inline void be_free(void *p) { afree(p); }
 static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 
 #elif defined(BE_GP)
@@ -53,8 +53,8 @@ static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 #define BE_NAME "gp"
 #define BE_HAS_FREE 1
 static inline void *be_alloc(size_t n) { return afalloc(n); }
-static inline void be_free(void *p) { f_free(p); }
-static void be_release(void **p, size_t n) { (void)p; (void)n; reset_region(); }
+static inline void be_free(void *p) { afree(p); }
+static void be_release(void **p, size_t n) { (void)p; (void)n; afa_reset(); }
 
 #else
 #error "define one of BE_MALLOC BE_PERSIST BE_ARENA BE_ARENAF BE_GP"
@@ -242,7 +242,7 @@ static void run_churn(void) {
         }
         uint64_t t1 = now_ns();
         for (size_t k = 0; k < SLOTS; k++) if (slot[k]) be_free(slot[k]);
-        be_release(ptrs, 0);            /* gp: reset_region; malloc: no-op */
+        be_release(ptrs, 0);            /* gp: afa_reset; malloc: no-op */
         if (smp >= 0) s[smp] = (double)(t1 - t0) / OPS;
     }
     (void)slot_sz;

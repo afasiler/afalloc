@@ -56,16 +56,16 @@ int main(void){
         uint64_t op = next() % 1000;
         if (op < 3) {
             check_all();
-            reset_region();
+            afa_reset();
             n_live = 0;
             resets++;
             struct live probe = { afalloc(64), 64, 7 };   /* region is empty again */
             assert(probe.p != NULL);
-            f_free(probe.p);
+            afree(probe.p);
         } else if (op < 480 && n_live > 0) {
             size_t k = next() % n_live;
             check(&blocks[k]);
-            f_free(blocks[k].p);
+            afree(blocks[k].p);
             blocks[k] = blocks[--n_live];
             frees++;
         } else if (n_live < MAX_LIVE) {

@@ -4,7 +4,7 @@ libc `malloc`/`free` against the four afalloc allocators. Reproduce with `make b
 
 - **Machine:** Apple M4, macOS (arm64), Apple clang 21, `-O2`, no sanitizers, single thread, on battery power
 - **Method:** 5 separate process runs per allocator; each reports the median of 9 timed samples (1 warm-up discarded); the tables show the median of those 5
-- **Allocators:** `persist` = `mmap/afalloc_persistent.c` (`afalloc`/`afree`, spinlock-guarded, size-class free lists, 8-byte header, bump window; bulk release is `afa_reset()`), `arena` = `arena_allocator/rv1103.c` (pure bump), `arenaf` = `arena_allocator/arena_malloc.c` (`arena_free` with boundary-tag coalescing), `gp` = `mmap/mmap_allocator.c` (bulk release uses `reset_region()`, churn uses `f_free()`)
+- **Allocators:** `persist` = `mmap/afalloc_persistent.c` (`afalloc`/`afree`, spinlock-guarded, size-class free lists, 8-byte header, bump window; bulk release is `afa_reset()`), `arena` = `arena_allocator/rv1103.c` (pure bump), `arenaf` = `arena_allocator/arena_malloc.c` (`afree` with boundary-tag coalescing), `gp` = `mmap/mmap_allocator.c` (bulk release uses `afa_reset()`, churn uses `afree()`)
 - **Workloads** are batch allocate, write first and last byte, release. Every batch fits inside a 1 MiB arena so all allocators run the same sizes. `malloc` has no bulk release and must `free` every block; that cost is real for a "frame/scratch" lifetime pattern and is the point of a bump allocator.
 - **Correctness gate:** each binary first allocates 2,000 mixed-size blocks, fills and verifies patterns and alignment; "Failed allocations" must be 0.
 

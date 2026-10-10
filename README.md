@@ -134,24 +134,24 @@ comparison. Run its tests with `make test` (`mmap/test.c`).
 - **Block header:** `size_t` size, a magic number (`0xAFA2BABA`) and a free flag
   (16 bytes on a 64-bit target; the header is 12 bytes on 32-bit, which breaks
   8-byte alignment there).
-- **Magic number:** verified on `f_free()` and during traversal so foreign
+- **Magic number:** verified on `afree()` and during traversal so foreign
   pointers and damaged headers are detected.
 - **First-fit with splitting** over an implicit list, with a bump frontier.
   A `lowest_free` hint (a block boundary before which everything is in use)
   keeps allocation at the frontier O(1) instead of walking the whole list.
-- **Forward coalescing** in `f_free()`, bounded to the range from `lowest_free`
+- **Forward coalescing** in `afree()`, bounded to the range from `lowest_free`
   up to the freed block rather than the whole region.
 - **Safe failure:** zero-size, oversized (including `SIZE_MAX`, which used to
   wrap to a 0-byte block when rounded) and `MAP_FAILED` all return `NULL`.
-  `f_free()` ignores pointers outside the allocated part of the region and
+  `afree()` ignores pointers outside the allocated part of the region and
   headers that were merged into a neighbour, so a double free or a pointer from
-  before `reset_region()` cannot corrupt the free-block hint.
+  before `afa_reset()` cannot corrupt the free-block hint.
 
 ```c
 void *afalloc(size_t size);
-void  f_free(void *ptr);
-void  f_coalescing(void);   // merge adjacent free blocks (f_free already does it)
-void  reset_region(void);
+void  afree(void *ptr);
+void  afa_coalesce(void);   // merge adjacent free blocks (afree already does it)
+void  afa_reset(void);
 ```
 
 It defines the same `afalloc` symbol as the other allocators, so link only one
@@ -163,7 +163,7 @@ of them into a program.
 
 The first experiment: a fixed 1 MiB **static array** with boundary tags. Each
 block carries a header *and* a footer holding a back-pointer to its header,
-which makes constant-time backward coalescing possible. `arena_free()` takes
+which makes constant-time backward coalescing possible. `afree()` takes
 the user pointer (like `free`) and coalesces in both directions via
 `arena_coalesce()`. Freed blocks are reused: `afalloc()` is first-fit (with
 splitting) over the blocks below the frontier, starting from a `first_free`

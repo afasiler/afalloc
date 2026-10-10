@@ -48,7 +48,7 @@ static void coalesce_until(size_t stop) {
 
                 if (nextIt->magic == 0xAFA2BABA && nextIt->free == 1) {
                     isIt->size += sizeof(struct metadata) + nextIt->size;
-                    nextIt->magic = 0;      /* absorbed: stale pointers to it must not pass f_free */
+                    nextIt->magic = 0;      /* absorbed: stale pointers to it must not pass afree */
                     continue;
                 }
             }
@@ -57,7 +57,7 @@ static void coalesce_until(size_t stop) {
     }
 }
 
-void f_coalescing(void) {
+void afa_coalesce(void) {
     if (mem == NULL || frontier == 0) return;
     coalesce_until(frontier);
 }
@@ -123,11 +123,11 @@ void* afalloc(size_t size) {
     return NULL;
 }
 
-void f_free(void *ptr) {
+void afree(void *ptr) {
     if (ptr == NULL || mem == NULL) return;
 
     /* Only a block that starts inside the allocated part of the region can be
-       real: a pointer from before reset_region() or from outside the region
+       real: a pointer from before afa_reset() or from outside the region
        is ignored without being dereferenced, because lowest_free must always
        stay a genuine block boundary. */
     unsigned char *p = (unsigned char*)ptr;
@@ -143,7 +143,7 @@ void f_free(void *ptr) {
     }
 }
 
-void reset_region(void) {
+void afa_reset(void) {
     if (mem == NULL) return;
 
     struct metadata *start = (struct metadata*)mem;
