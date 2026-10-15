@@ -23,12 +23,14 @@ void app_main(void)
 
     if (failures == 0) {
         uart_puts("SELFTEST PASSED\n");
+        uart_flush();
         led_set(1);
         for (;;) {
         }
     }
     uart_put_u32((uint32_t)failures);
     uart_puts(" test(s) FAILED\n");
+    uart_flush();
     for (;;) {
         led_toggle();
         delay_ms(100);

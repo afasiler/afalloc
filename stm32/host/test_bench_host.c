@@ -19,9 +19,11 @@ uint32_t host_cycle_step(void)
 
 uint32_t clock_hclk_hz(void)  { return 100000000u; }
 uint32_t clock_pclk1_hz(void) { return 50000000u; }
+uint32_t clock_target_hz(void) { return 100000000u; }
 
 void uart_init(uint32_t pclk1_hz, uint32_t baud) { (void)pclk1_hz; (void)baud; }
 void uart_putc(char c) { putchar(c); }
+void uart_flush(void) { fflush(stdout); }
 void uart_puts(const char *s) { fputs(s, stdout); }
 void uart_put_u32(uint32_t v) { printf("%u", (unsigned)v); }
 void uart_put_hex32(uint32_t v) { printf("0x%08x", (unsigned)v); }

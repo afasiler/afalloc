@@ -11,11 +11,12 @@ void uart_init(uint32_t pclk1_hz, uint32_t baud)
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
     (void)RCC->APB1ENR;
 
-    /* PA2/PA3 -> alternate function mode (MODER = 10), function 7 (AFRL, 4 bits per pin). */
-    GPIOA->MODER = (GPIOA->MODER & ~((0x3u << (TX_PIN * 2u)) | (0x3u << (RX_PIN * 2u))))
-                 | (0x2u << (TX_PIN * 2u)) | (0x2u << (RX_PIN * 2u));
+    /* PA2/PA3 -> alternate function 7 (AFRL, 4 bits per pin) FIRST, then alternate-function
+       mode (MODER = 10), so the pins never sit in another function in between. */
     GPIOA->AFR[0] = (GPIOA->AFR[0] & ~((0xFu << (TX_PIN * 4u)) | (0xFu << (RX_PIN * 4u))))
                   | (AF_USART2 << (TX_PIN * 4u)) | (AF_USART2 << (RX_PIN * 4u));
+    GPIOA->MODER = (GPIOA->MODER & ~((0x3u << (TX_PIN * 2u)) | (0x3u << (RX_PIN * 2u))))
+                 | (0x2u << (TX_PIN * 2u)) | (0x2u << (RX_PIN * 2u));
 
     /* With 16x oversampling (OVER8 = 0) USARTDIV = fck / (16 * baud), and BRR holds
        USARTDIV as 12.4 fixed point, i.e. USARTDIV * 16 = fck / baud. RM0383 19.3.4. */
@@ -28,6 +29,13 @@ void uart_putc(char c)
     while ((USART2->SR & USART_SR_TXE) == 0) {
     }
     USART2->DR = (uint32_t)(unsigned char)c;
+}
+
+void uart_flush(void)
+{
+    /* TXE only says the byte moved to the shift register; TC says it has left the pin. */
+    while ((USART2->SR & USART_SR_TC) == 0) {
+    }
 }
 
 void uart_puts(const char *s)

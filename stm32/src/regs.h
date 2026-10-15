@@ -75,7 +75,8 @@ typedef struct {
 
 #define PWR ((PWR_TypeDef *)0x40007000u)
 #define PWR_CR_VOS_MASK     (0x3u << 14)
-#define PWR_CR_VOS_SCALE1   (0x3u << 14)  /* 11 = scale 1, needed for 100 MHz */
+#define PWR_CR_VOS_SCALE1   (0x3u << 14)  /* 11 = scale 1, needed above 84 MHz */
+#define PWR_CSR_VOSRDY      (1u << 14)    /* regulator output ready (RM0383 p.88) */
 
 /* ---- Flash interface. Base 0x4002 3C00. RM0383 3.8 (p.59) ---- */
 typedef struct {
@@ -87,6 +88,8 @@ typedef struct {
 #define FLASH_ACR_PRFTEN    (1u << 8)
 #define FLASH_ACR_ICEN      (1u << 9)
 #define FLASH_ACR_DCEN      (1u << 10)
+#define FLASH_ACR_ICRST     (1u << 11)  /* reset the instruction cache; only while ICEN = 0 */
+#define FLASH_ACR_DCRST     (1u << 12)  /* reset the data cache; only while DCEN = 0 */
 
 /* ---- GPIO. GPIOA base 0x4002 0000. RM0383 8.4 (p.158-163) ---- */
 typedef struct {

@@ -25,11 +25,26 @@
     X(256, 16)
 #endif
 
+/* Upper bound on the memory all pools may take together (a sanity limit checked at compile
+ * time; the linker separately checks that everything fits in RAM with the stack). */
+#ifndef POOL_MAX_TOTAL_BYTES
+#define POOL_MAX_TOTAL_BYTES (96u * 1024u)
+#endif
+
 /* 1 = extra checks: a bitmap per pool to catch double frees, poison bytes on freed blocks
- * to catch writes after free, and pool_check() to verify the free lists. Costs a few cycles
- * and 1 bit per block. Set to 0 for the fastest build. */
+ * to catch writes after free, a sanity check of every free-list link before it is followed,
+ * and pool_check() to verify the free lists. Costs time (free also touches the whole block)
+ * and 1 bit per block. Set to 0 for the fastest, constant-time build. */
 #ifndef POOL_DEBUG
 #define POOL_DEBUG 1
+#endif
+
+/* 1 (default) = alloc/free mask interrupts for their few instructions, so they are safe to
+ * call from interrupt handlers. 0 = no masking: faster, but then the allocator must only be
+ * used from one context (or the caller must serialise). Lets the benchmark show what the
+ * safety costs. */
+#ifndef POOL_IRQ_SAFE
+#define POOL_IRQ_SAFE 1
 #endif
 
 /* 1 = when the best-fitting pool is empty, take a block from the next larger pool

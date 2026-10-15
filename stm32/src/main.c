@@ -3,7 +3,7 @@
  *
  * The LED reports progress even if the serial output is not connected:
  *   1 blink                 the program started and the cycle counter works
- *   2 blinks                the clock now runs at 100 MHz
+ *   2 blinks                the PLL clock is running (CLOCK_MHZ, default 96 MHz)
  *   5 fast blinks           the PLL setup failed: continuing at 16 MHz (see the serial log)
  *   endless fast triple blink  this core has no cycle counter (cannot continue)
  */
@@ -48,9 +48,9 @@ int main(void)
 
     led_blink(1, 250, 250);                       /* stage 1: alive, still at 16 MHz */
 
-    int clock_rc = clock_init_100mhz();
+    int clock_rc = clock_init_pll();
     if (clock_rc == 0)
-        led_blink(2, 250, 250);                   /* stage 2: 100 MHz */
+        led_blink(2, 250, 250);                   /* stage 2: PLL clock running */
     else
         led_blink(5, 80, 80);                     /* PLL problem: still running at 16 MHz */
 
@@ -59,10 +59,17 @@ int main(void)
     print_kv("HCLK  = ", clock_hclk_hz(), " Hz\n");
     print_kv("PCLK1 = ", clock_pclk1_hz(), " Hz\n");
     if (clock_rc != 0)
-        print_kv("clock_init_100mhz failed at stage ", (uint32_t)clock_rc, " (running at 16 MHz)\n");
+        print_kv("clock_init_pll failed at stage ", (uint32_t)clock_rc, " (running at 16 MHz)\n");
 
-    if (pool_init() != 0)
-        uart_puts("pool_init: invalid pool configuration!\n");
+    if (pool_init() != 0) {
+        /* A bad pool table is a programming error: stop here and say so, do not run on. */
+        uart_puts("pool_init: invalid pool configuration (sizes must ascend)! halting\n");
+        uart_flush();
+        for (;;) {
+            led_toggle();
+            delay_ms(80);
+        }
+    }
     print_kv("pools = ", pool_count(), "");
     print_kv(", block memory = ", pool_total_bytes(), " bytes\n");
 

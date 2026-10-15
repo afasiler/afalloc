@@ -77,9 +77,11 @@ SECTIONS
     _epool = .;
   } > RAM
 
-  /* 6. Reserve the stack. If data + bss + pools leave less than _Min_Stack_Size, the
-        link fails with "region RAM overflowed" instead of the program corrupting
-        itself at run time. */
+  /* 6. Account for the stack. This section holds no data and does not sit where the stack
+        lives (the stack is at the TOP of RAM, growing down from _estack): it only makes the
+        linker count _Min_Stack_Size bytes after the pools, so that if data + bss + pools leave
+        less than that the link fails with "region RAM overflowed" instead of the program
+        corrupting itself at run time. */
   ._stack_reserve (NOLOAD) :
   {
     . = ALIGN(8);
@@ -88,11 +90,15 @@ SECTIONS
     . = ALIGN(8);
   } > RAM
 
+  /* Lowest address the stack may reach: _Min_Stack_Size below the top of RAM. Nothing
+     detects a stack that grows past it (an MPU guard region is the planned fix). */
+  _sstack = _estack - _Min_Stack_Size;
+
   /* Heap for the optional malloc benchmark build only (newlib's malloc, see src/sbrk.c):
-     everything from the end of the pools up to the stack reserve. The normal builds do
+     everything from the end of the pools up to the bottom of the stack. The normal builds do
      not use malloc and never reference these symbols. */
   PROVIDE(_sheap = _epool);
-  PROVIDE(_eheap = _estack - _Min_Stack_Size);
+  PROVIDE(_eheap = _sstack);
 
   /* Unwind tables are not used in this C program. */
   /DISCARD/ :

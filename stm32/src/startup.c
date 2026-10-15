@@ -88,7 +88,10 @@ void Default_Handler(void)
 void Reset_Handler(void)
 {
     /* The FPU is off after reset. The compiler may use it even for plain data copies
-       (hard-float ABI), so switch it on before anything else: CP10 and CP11 full access. */
+       (hard-float ABI), so switch it on before anything else: CP10 and CP11 full access.
+       This file is built with -mgeneral-regs-only (see the Makefile), so no FP/vector
+       instruction can be generated before this point. Constructors (__attribute__((constructor)))
+       are NOT run: there is no C runtime start-up. */
     CORE_CPACR |= (0xFu << 20);
     __asm volatile("dsb\n\tisb" : : : "memory");
 
