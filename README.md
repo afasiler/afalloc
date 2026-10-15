@@ -3,8 +3,10 @@
 A dynamic memory allocator written from scratch in C, built to understand what
 actually happens underneath `malloc` and `free`.
 
-The repository contains three generations of allocator, written in order. The
-newest one, `mmap/afalloc_persistent.c`, is the canonical one.
+The repository contains three generations of Linux allocator, written in order
+(the newest, `mmap/afalloc_persistent.c`, is the canonical one), plus a separate
+bare-metal pool allocator for the STM32F411RE microcontroller in [`stm32/`](stm32/)
+(section 4).
 
 ---
 
@@ -181,6 +183,45 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
 
 ---
 
+## 4. `stm32/` — bare-metal pool allocator for the STM32F411RE
+
+A separate project: a fixed-size **block pool** allocator for the Nucleo-F411RE
+(Cortex-M4F, 128 KB SRAM, no MMU, no OS), with its own startup code, linker script,
+clock setup and cycle-accurate benchmark. It shares nothing with the Linux allocators
+above; it lives in its own folder because the constraints are different.
+
+- **Static pools, no per-block header.** Blocks of 16/32/64/128/256 bytes live in
+  arrays placed by the linker. A free block stores the link to the next free block
+  in its own first bytes, so a 16-byte request costs exactly 16 bytes. `alloc` and
+  `free` are a pop and a push on a free list: O(1), no loops, no division
+  (the owning pool is found by address range, the block index by a shift).
+- **Bare metal.** No HAL, no RTOS, no libc: own vector table (checked against
+  RM0383 Table 37), reset handler, `-nostdlib` build, PLL clock (96 MHz default,
+  with the reasoning for not using 100 MHz), polled USART2 output.
+- **Debug mode** (`POOL_DEBUG`): double-free detection, poisoning of freed blocks,
+  `pool_check()` heap walk, damaged-free-list protection. Release mode trusts the caller.
+- **Measured against `malloc`.** `make APP=bench` and `make APP=bench_malloc` time
+  the pool and newlib-nano `malloc` with the DWT cycle counter on the board.
+- **Verified without the board:** unit tests under ASan/UBSan across 11 pool
+  configurations, white-box tests, the real startup code and linker script run on an
+  emulated Cortex-M4 (QEMU), and mutation testing (22 bugs injected into the pool:
+  20 caught, 2 provably equivalent; 12 into startup/vector table/linker: all 12 caught).
+- **Not yet verified on hardware:** the PLL sequence, the benchmark numbers and the
+  serial output. The board bring-up checklist with the expected register values is in
+  the stm32 README.
+
+```bash
+cd stm32
+make host-test-all   # everything that runs on the computer
+make emu-test        # real startup + pool on an emulated Cortex-M4 (needs QEMU)
+make APP=blink flash # write the first test program to the board (needs OpenOCD)
+```
+
+Everything else (memory map, clock rationale, benchmark method, verification table,
+open items) is in [`stm32/README.md`](stm32/README.md).
+
+---
+
 ## Known limitations
 
 - **Free-list blocks never coalesce** and keep their size class, so a workload
@@ -209,6 +250,8 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
 - Backward coalescing for the free lists.
 - Bring `mmap_allocator.c` up to the same safety level, or retire it.
 - Run the test suite on real RV1103 hardware.
+- STM32: bring up the board, run the benchmark on it, and size the pools to the real
+  workload (a quantised neural network is planned) once its memory needs are known.
 
 ## Why
 

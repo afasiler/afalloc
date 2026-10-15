@@ -110,7 +110,7 @@ Read the results with these differences in mind:
 | Same logic on a real 32-bit Cortex-M4 (4-byte pointers, Thumb-2) | QEMU with the real startup code and linker script | `make emu-test` |
 | Startup copies all of `.data`, clears all of `.bss` (RAM pre-filled with 0xA5), SP is 8-byte aligned | QEMU test; 12 bugs injected into startup/vector table/linker: all 12 caught | `make emu-test` |
 | Vector table slots are right | QEMU: SVC, PendSV, SysTick, IRQ 28, 38 and 85 (the last entry) are each triggered and must reach exactly their own handler | `make emu-test` |
-| Stack needed ~230 B for the pool test (4 KB accounted) | stack painting under QEMU | `make emu-test` |
+| Stack needed ~950 B for the pool test (4 KB accounted) | stack painting under QEMU | `make emu-test` |
 | Register offsets match the manual | `_Static_assert`s against RM0383 offsets | `regs.h` |
 | PLL numbers respect every limit in the manual | `_Static_assert`s, including the 48 MHz limit of the second PLL output | `clock.c` |
 | Hardware constants match the manuals | two independent reviews: one derived every value from the PDFs without seeing the code, one audited the code line by line; they agreed | cross-validation below |
