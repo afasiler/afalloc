@@ -76,6 +76,15 @@ static int primask_restored(uint32_t initial)
     ok &= get_primask() == initial;
     pool_free(b);
     ok &= get_primask() == initial;
+    void *c = pool_alloc_class(0);                   /* the fixed-size entry point: found, then out of range */
+    ok &= get_primask() == initial;
+    pool_free(c);
+    pool_alloc_class(pool_count());
+    ok &= get_primask() == initial;
+    void *d = POOL_ALLOC(8);
+    ok &= get_primask() == initial;
+    pool_free(d);
+    ok &= get_primask() == initial;
     void *held[64];
     unsigned n = 0;
     for (;;) {                                       /* exhaust the biggest pool: the slow path */

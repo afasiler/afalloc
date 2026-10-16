@@ -156,6 +156,45 @@ static int t_routing(void)
     return 0;
 }
 
+/* POOL_ALLOC / pool_class_of / pool_alloc_class: the compile-time-size entry point agrees with pool_alloc. */
+static int t_fixed_size(void)
+{
+    REQUIRE(pool_init() == 0);
+    uint32_t max = block_size_of(pool_count() - 1);
+    for (size_t s = 0; s <= (size_t)max + 2; s++) {
+        size_t c = pool_class_of(s);
+        if (s == 0 || s > max) {
+            REQUIRE(c >= pool_count());
+            REQUIRE(pool_alloc_class(c) == 0);
+            continue;
+        }
+        REQUIRE(c < pool_count());
+        REQUIRE(block_size_of((unsigned)c) >= s);                 /* it fits... */
+        REQUIRE(c == 0 || block_size_of((unsigned)c - 1) < s);    /* ...and no smaller pool does */
+        void *a = pool_alloc_class(c);
+        REQUIRE(a != 0);
+        REQUIRE(pool_block_size(a) == block_size_of((unsigned)c));
+        REQUIRE(((uintptr_t)a & 7u) == 0);
+        pool_free(a);
+    }
+    void *p = POOL_ALLOC(1);                                       /* the macro with constants */
+    REQUIRE(p != 0 && pool_block_size(p) == block_size_of(0));
+    pool_free(p);
+    p = POOL_ALLOC(8);
+    REQUIRE(p != 0 && pool_block_size(p) == block_size_of(0));
+    pool_free(p);
+    REQUIRE(POOL_ALLOC(0) == 0);
+
+    pool_misc_t m0, m1;
+    pool_get_misc(&m0);
+    REQUIRE(pool_alloc_class(pool_count()) == 0);                  /* out-of-range classes are refused, counted */
+    REQUIRE(pool_alloc_class((size_t)-1) == 0);
+    pool_get_misc(&m1);
+    REQUIRE(m1.too_big == m0.too_big + 2);
+    REQUIRE(pool_check() == 0);
+    return 0;
+}
+
 static int t_exhaust_reuse(void)
 {
     REQUIRE(pool_init() == 0);
@@ -483,6 +522,7 @@ int pool_selftest(selftest_log_t log)
     static const test_t tests[] = {
         { "init and configuration",                 t_init },
         { "size routing and limits",                t_routing },
+        { "fixed-size allocation (POOL_ALLOC)",     t_fixed_size },
         { "exhaust, free and reuse",                t_exhaust_reuse },
         { "LIFO reuse",                             t_lifo },
         { "blocks do not overlap",                  t_isolation },

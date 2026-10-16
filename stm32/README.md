@@ -124,8 +124,12 @@ prints the build flags and warns if the clock setup failed.
 | random 8..256 B workload, alloc (p50 / max) | 79 / 92 | 36 / 55 | 104 / 266 |
 | random workload, free (p50 / max) | 95 / 95 | 40 / 40 | 81 / 130 |
 | cold (caches flushed) alloc / free 64 B | 81 / 90 | 45 / 46 | 134 / 94 |
+| alloc of a size known at compile time, `POOL_ALLOC(n)` | not there | **27** (16 / 64 / 256 B, exact) | n/a |
 
-(36 cycles = 375 ns at 96 MHz.) The first version found its pool and its owner by looping over the
+(36 cycles = 375 ns at 96 MHz; 27 cycles = 281 ns.) `POOL_ALLOC(n)` resolves the pool at build time
+(checked in the disassembly: the call site is `movs r0, #class` then a branch), which removes the
+size-to-pool step. My estimate before measuring was about 20 cycles; the real gain is 9 because the
+range check on the class index and the memory loads remain. The first version found its pool and its owner by looping over the
 pools, so it got slower for bigger blocks (and its free was slower than `malloc`'s); the table
 lookups removed that. What the knobs cost, measured the same way: interrupt safety
 (`POOL_IRQ_SAFE=1` vs `0`) is 5 cycles on alloc and 3 on free; peak tracking
@@ -146,11 +150,11 @@ Read the results with these differences in mind:
 
 | Claim | Verified by | Where |
 |---|---|---|
-| Pool logic is correct (routing, exhaustion, reuse, bad/double frees, no overlap, stress) | 12 unit tests under sanitizers, 11 pool configurations, `-O0/-O1/-O2/-Os`; also on the board (self-test) | `make host-test-all`, `make APP=selftest flash` |
+| Pool logic is correct (routing, exhaustion, reuse, bad/double frees, no overlap, stress) | 13 unit tests under sanitizers, 13 pool configurations, `-O0/-O1/-O2/-Os`; also on the board (self-test) | `make host-test-all`, `make APP=selftest flash` |
 | `pool_check()`, spill accounting, refusal of a damaged free list, rejection of a bad table | white-box tests that corrupt the pool's own state, on 12 table/granule/debug combinations | `make host-test-white` |
 | Every request size reaches the smallest pool that fits; every byte of the arena maps to the right owner (including padding between pools) | exhaustive white-box loops against a brute-force search | `make host-test-white` |
 | Alloc/free restore the interrupt mask on every path (fast, slow, refused, statistics), also when it was already masked | PRIMASK read back on the emulated core | `make emu-test` |
-| The tests themselves catch bugs | 50 deliberate bugs injected into `pool.c` one at a time: 47 caught, the other 3 cannot change behaviour (see mutation testing below) | mutation run |
+| The tests themselves catch bugs | 56 deliberate bugs injected into `pool.c`/`pool.h` one at a time: 53 caught, the other 3 cannot change behaviour (see mutation testing below) | mutation run |
 | Same logic on a real 32-bit Cortex-M4 (4-byte pointers, Thumb-2) | QEMU with the real startup code and linker script | `make emu-test` |
 | Startup copies all of `.data`, clears all of `.bss` (RAM pre-filled with 0xA5), SP is 8-byte aligned | QEMU test; 12 bugs injected into startup/vector table/linker: all 12 caught | `make emu-test` |
 | Vector table slots are right | QEMU: SVC, PendSV, SysTick, IRQ 28, 38 and 85 (the last entry) are each triggered and must reach exactly their own handler | `make emu-test` |
@@ -173,7 +177,7 @@ and a review of the benchmark method. Their findings and what was done:
 | blind derivation + audit | HSI is only +-1..5 % accurate, so a nominal 100 MHz can exceed the limit; second PLL output was 50 MHz > 48 MHz | default now 96 MHz, 48 MHz output, compile-time checks |
 | audit | no wait for `VOSRDY`; function assumed reset state; `uart_putc` did not wait for the last byte | fixed (`VOSRDY` wait, return-to-HSI guard, `uart_flush`) |
 | pool review | debug build is not constant-time; a damaged free-list link could cause a wild write; `pool_init` unsafe when repeated; invalid table only reported at run time | hardened and documented; `main` halts on a bad table |
-| pool review | tests missed many bugs | 12 tests, white-box tests, config matrix, mutation-proven |
+| pool review | tests missed many bugs | 13 tests, white-box tests, config matrix, mutation-proven |
 | startup review | emulator test could not detect a missing `.bss` clear, a misaligned SP, or wrong vector slots | RAM pre-fill, SP/VTOR checks, six slots triggered |
 | startup review | build flags did not trigger a rebuild; FPU safety depended on the compiler | flag stamp; `-mgeneral-regs-only` for `startup.c` |
 | benchmark review | instructions inside the timed window; calibration did not match; thin statistics | one inline-asm block per call + checker; same-shape calibration; percentiles, cold scenario |
@@ -186,8 +190,8 @@ program loop forever). A baseline run of the unmodified code must pass first.
 
 | Where the bugs went | Injected | Caught | Not caught |
 |---|---|---|---|
-| `pool.c` (size routing, owner map, free-list checks, every `pool_check()` code, spill accounting, statistics, ...) | 45 | 42 | 3, all **equivalent** (below) |
-| `pool.c`, forgetting to restore the interrupt mask (invisible on the host, so they run on emulated cores) | 5 | 5 | 0 |
+| `pool.c` (size routing, owner map, free-list checks, every `pool_check()` code, spill accounting, statistics, the fixed-size entry point, ...) | 50 | 47 | 3, all **equivalent** (below) |
+| `pool.c`, forgetting to restore the interrupt mask (invisible on the host, so they run on emulated cores) | 6 | 6 | 0 |
 | `startup.c`, the vector table and `linker.ld` (missing/short `.bss` clear, short `.data` copy, no FPU enable, wrong Reset/PendSV/SysTick/TIM2/SPI5 slot, misaligned SP, `.data` load address off by a word, no `KEEP`) | 12 | 12 | 0 |
 
 The three that cannot be caught change no behaviour, so no test could tell them apart from the
@@ -210,6 +214,9 @@ without proving anything:
 - nothing checked that the interrupt mask is restored: five mutants that forget `irq_restore` all
   passed until the emulator test was taught to read PRIMASK back (found while optimising, when
   those paths were rewritten);
+- the new fixed-size entry point (`pool_alloc_class`) had an out-of-range path that forgot to restore
+  the interrupt mask, and the mutation run showed no test noticed: the emulated-core test now calls
+  it on every path;
 - nothing checked that a table that is not strictly ascending is rejected by `pool_init()`.
 
 All were fixed and the runs repeated, under a UTF-8 locale.
@@ -229,7 +236,7 @@ and the serial output captured from the ST-Link virtual COM port:
 | `USART2_BRR` | `0x000001A1` | `0x000001A1` |
 | `DWT_CTRL` bit 0 / `CPACR` | set / `0x00F00000` | `0x40000001` / `0x00F00000` |
 | Serial banner | `HCLK = 96000000 Hz`, `PCLK1 = 48000000 Hz` | exactly that, then `tick N` |
-| `make APP=selftest flash` | every test ok | 12 tests ok, `SELFTEST PASSED` (also after each optimisation) |
+| `make APP=selftest flash` | every test ok | 13 tests ok, `SELFTEST PASSED` (also after each optimisation) |
 | `make APP=bench flash`, `make APP=bench_malloc flash` | tables | see the results above |
 
 Still not verified:

@@ -59,11 +59,17 @@ M = [
  ("check: range check removed (code 2)", "            return 2;", "            (void)0;", 0),
  ("check: missing-blocks test removed (code 6)", "    if (listed + p->in_use != fresh)\n        return 6;", "", 0),
  ("check (debug): poison scan removed (code 5)", "                    return 5; ", "                    (void)0; ", 0),
+ ("fixed-size: pool_class_of off by one (<=)", "((size_t)(block_size) < pool_sz_)", "((size_t)(block_size) <= pool_sz_)", 0, "include/pool.h"),
+ ("fixed-size: pool_class_of accepts size 0", "return pool_sz_ == 0 ? (size_t)(0 POOL_TABLE(POOL__ONE_)) : (size_t)(0 POOL_TABLE(POOL__LT_));", "return (size_t)(0 POOL_TABLE(POOL__LT_));", 0, "include/pool.h"),
+ ("fixed-size: class bounds check off by one", "class_index >= NUM_POOLS", "class_index > NUM_POOLS", 0),
+ ("fixed-size: out-of-range class not counted", "    if (__builtin_expect(class_index >= NUM_POOLS, 0)) {\n        misc.too_big++;\n", "    if (__builtin_expect(class_index >= NUM_POOLS, 0)) {\n", 0),
+ ("fixed-size: class ignored (always pool 0)", "alloc_from(&pools[class_index], state)", "alloc_from(&pools[0], state)", 0),
  # interrupt mask bugs: invisible on the host (irq is a no-op there), must be caught by the emulator
  ("irq: fast alloc path forgets pool_irq_restore", "        account(p, n, 0);\n        pool_irq_restore(state);\n        return n;", "        account(p, n, 0);\n        return n;", 1),
  ("irq: free forgets pool_irq_restore", "    p->in_use--;\n    pool_irq_restore(state);\n}", "    p->in_use--;\n}", 1),
  ("irq: refused free forgets pool_irq_restore", "        p->bad_free++;                                  /* middle of a block, never allocated, or double free */\n    pool_irq_restore(state);", "        p->bad_free++;                                  /* middle of a block, never allocated, or double free */", 1),
- ("irq: alloc_slow forgets pool_irq_restore", "    pool_irq_restore(state);\n    return result;\n}\n\nvoid *pool_alloc", "    return result;\n}\n\nvoid *pool_alloc", 1),
+ ("irq: alloc_slow forgets pool_irq_restore", "    pool_irq_restore(state);\n    return result;\n}\n\n/* The part of pool_alloc()", "    return result;\n}\n\n/* The part of pool_alloc()", 1),
+ ("irq: class alloc out-of-range path forgets pool_irq_restore", "        misc.too_big++;\n        pool_irq_restore(state);\n        return 0;\n    }\n\n    return alloc_from(&pools[class_index]", "        misc.too_big++;\n        return 0;\n    }\n\n    return alloc_from(&pools[class_index]", 1),
  ("irq: zero/too-big alloc path forgets pool_irq_restore", "            misc.too_big++;\n        pool_irq_restore(state);\n        return 0;", "            misc.too_big++;\n        return 0;", 1),
 ]
 
@@ -103,19 +109,19 @@ def emu_cmd():
     return [("emulated cores", "nice make test-qemu QEMU_TARGETS='microbit:cortex-m0:0x4000 mps2-an386:cortex-m4:0x10000' QEMU_TIMEOUT=40")]
 
 
-def setup(tmp, pool_src):
+def setup(tmp, pool_src, rel="src/pool.c"):
     for d in ("include", "src", "tests", "configs", "ports"):
         shutil.copytree(os.path.join(REPO, d), os.path.join(tmp, d), ignore=shutil.ignore_patterns("build"))
     shutil.copy(os.path.join(REPO, "Makefile"), tmp)
     os.makedirs(os.path.join(tmp, "build"), exist_ok=True)
-    with open(os.path.join(tmp, "src", "pool.c"), "w") as fh:
+    with open(os.path.join(tmp, rel), "w") as fh:
         fh.write(pool_src)
 
 
-def test_one(pool_src, need_emu):
+def test_one(pool_src, need_emu, rel="src/pool.c"):
     tmp = tempfile.mkdtemp(prefix="mut_", dir=os.environ.get("MUT_TMP"))
     try:
-        setup(tmp, pool_src)
+        setup(tmp, pool_src, rel)
         cmds = host_cmds() + (emu_cmd() if need_emu else [])
         for name, cmd in cmds:
             rc, out = run(cmd, tmp, 150 if name == "emulated cores" else 100)
@@ -138,17 +144,20 @@ def main():
     print("passes host + emulated-core tests", flush=True)
     survivors, bad = [], []
     n = 0
-    for name, old, new, emu in M:
+    for entry in M:
+        name, old, new, emu = entry[:4]
+        rel = entry[4] if len(entry) > 4 else "src/pool.c"
+        text = orig if rel == "src/pool.c" else open(os.path.join(REPO, rel)).read()
         if want and want not in name:
             continue
-        cnt = orig.count(old)
+        cnt = text.count(old)
         if cnt != 1:
             bad.append((name, cnt))
             print(f"  [skip] {name}: pattern found {cnt} times (must be exactly 1)")
             continue
         n += 1
         t0 = time.time()
-        caught, why = test_one(orig.replace(old, new), emu)
+        caught, why = test_one(text.replace(old, new), emu, rel)
         print(f"  {'CAUGHT  ' if caught else 'SURVIVED'} {name}   <- {why}  ({time.time()-t0:.0f}s)", flush=True)
         if not caught:
             survivors.append(name)

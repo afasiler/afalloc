@@ -193,6 +193,8 @@ It shares nothing with the Linux allocators above.
   number of pools: size to pool by a count-leading-zeros and a 32-byte table, address to pool by
   a table read. Measured on a Cortex-M4 at 96 MHz: alloc 36 cycles, free 40, always (newlib-nano
   `malloc` in the same run: 86-90 and 52-67, worst case 266).
+- **Faster for known sizes:** `POOL_ALLOC(sizeof(struct msg))` lets the compiler pick the pool at
+  build time: alloc takes 27 cycles instead of 36.
 - **No per-block header**, no fragmentation inside a pool, static memory (the link fails if it does
   not fit), interrupt safe on any Cortex-M (PRIMASK), a debug mode with double-free, write-after-free
   and corrupted-free-list detection.
@@ -200,8 +202,8 @@ It shares nothing with the Linux allocators above.
   CPUs supply two inline functions or build single-context. Example configs for a small Cortex-M0
   class part and the STM32F411RE are in `embedded_pool/configs/`.
 - **Tested.** Unit, white-box and config-matrix tests under sanitizers; the self-test **run** on
-  emulated Cortex-M0, M3, M4 and M7 (QEMU) and on a real Cortex-M4; mutation testing (50 injected
-  bugs: 47 caught, 3 provably equivalent). Compile-checked, not run, for M0+ at several
+  emulated Cortex-M0, M3, M4 and M7 (QEMU) and on a real Cortex-M4; mutation testing (56 injected
+  bugs: 53 caught, 3 provably equivalent). Compile-checked, not run, for M0+ at several
   optimisation levels. Not run on real M0/M3/M7/M33 silicon or with compilers other than GCC/clang.
 
 ```bash

@@ -251,6 +251,18 @@ static __attribute__((noinline)) void *alloc_slow(pool_t *p, uint32_t state)
     return result;
 }
 
+/* The part of pool_alloc() that is the same whether the pool was found by size or by index. */
+static inline __attribute__((always_inline)) void *alloc_from(pool_t *p, uint32_t state)
+{
+    free_node_t *n = pop_free(p);
+    if (__builtin_expect(n != 0, 1)) {
+        account(p, n, 0);
+        pool_irq_restore(state);
+        return n;
+    }
+    return alloc_slow(p, state);
+}
+
 void *pool_alloc(size_t size)
 {
     uint32_t state = pool_irq_save();
@@ -265,14 +277,20 @@ void *pool_alloc(size_t size)
         return 0;
     }
 
-    pool_t *p = &pools[route[ceil_log2(size)]];         /* smallest pool that fits: no search */
-    free_node_t *n = pop_free(p);
-    if (__builtin_expect(n != 0, 1)) {
-        account(p, n, 0);
+    return alloc_from(&pools[route[ceil_log2(size)]], state);   /* smallest pool that fits: no search */
+}
+
+void *pool_alloc_class(size_t class_index)
+{
+    uint32_t state = pool_irq_save();
+
+    if (__builtin_expect(class_index >= NUM_POOLS, 0)) {
+        misc.too_big++;
         pool_irq_restore(state);
-        return n;
+        return 0;
     }
-    return alloc_slow(p, state);
+
+    return alloc_from(&pools[class_index], state);
 }
 
 /* The pool whose granule contains `ptr`, or NULL outside the arena. For a pointer in the unused

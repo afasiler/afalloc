@@ -149,6 +149,13 @@ static int primask_restored(uint32_t initial)
     MASK_STEP(pool_free((uint8_t *)b + 1));              /* middle of a block */
     MASK_STEP(pool_free(b));
     MASK_STEP(pool_free(b));                             /* double free (refused with POOL_DEBUG) */
+    void *c = pool_alloc_class(0);                       /* the fixed-size entry point: found, then out of range */
+    ok &= get_primask() == initial;
+    MASK_STEP(pool_free(c));
+    MASK_STEP(pool_alloc_class(pool_count()));
+    void *d = POOL_ALLOC(16);
+    ok &= get_primask() == initial;
+    MASK_STEP(pool_free(d));
     void *held[64];
     unsigned n = 0;
     for (;;) {                                           /* exhaust the 256-byte pool */

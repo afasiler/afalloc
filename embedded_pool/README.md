@@ -47,9 +47,25 @@ everything else is plain C. The firmware project that uses the library on a real
    pool_init();                       /* once, before anything else; returns -1 for a bad table */
    void *p = pool_alloc(40);          /* from the 64-byte pool */
    pool_free(p);
+
+   struct msg *m = POOL_ALLOC(sizeof *m);   /* size known at build time: faster, see below */
    ```
 6. **Check it on your core:** run `make test-qemu` (or flash `pool_selftest()` to the board, as
    `../stm32` does), then read the real peak usage with `pool_get_stats()` to tune the table.
+
+### Fixed-size allocations: `POOL_ALLOC(n)`
+
+When the size is a compile-time constant (an object, a struct, a fixed buffer), write
+`POOL_ALLOC(n)` instead of `pool_alloc(n)`. The compiler works out which pool at build time, so the
+size-to-pool step disappears from the run-time path: **27 cycles instead of 36** on the Cortex-M4
+board, for every size. Under the hood it is `pool_alloc_class(pool_class_of(n))`. Details:
+- it needs optimisation on (`-O1` or higher folds the class to a constant; at `-O0` it still works,
+  just not faster) and the same pool table in every file that uses it;
+- a size of 0 or bigger than the biggest pool returns `NULL` and is counted as `too_big`, like
+  `pool_alloc`; with a constant that is a build-time mistake you will see in `pool_get_misc()`;
+- `pool_alloc_class(i)` (pool index, 0 = smallest) is public too, for code that picks the pool
+  itself; an out-of-range index returns `NULL`;
+- freeing is the same call for both: `pool_free(p)`.
 
 ### Sizing the pools
 
@@ -104,13 +120,13 @@ Limits, stated plainly:
 | Command | What it does | Needs |
 |---|---|---|
 | `make test-all` | everything that runs on this computer (below) | a C compiler |
-| `make test` | 12 unit tests under AddressSanitizer + UBSan | |
+| `make test` | 13 unit tests under AddressSanitizer + UBSan | |
 | `make test-configs` | the unit tests under 13 table/option combinations (tiny, one pool, big blocks, debug on/off, spill, no peak tracking, a user config) | |
 | `make test-white` | white-box tests that corrupt the pool's own state: every request size reaches the smallest fitting pool, every byte of the arena maps to the right owner (also padding between pools), `pool_check()` codes, spill accounting, rejection of a table that is not ascending, on 11 table/granule/debug combinations | |
 | `make test-bench` | the benchmark harness with a fake cycle counter (logic only) | |
 | `make check-ports` | **compiles** (does not run) for Cortex-M0+, M3, M4, M7 at `-O0/-O2/-Os` with warnings as errors, for debug, release, spill and no-irq-mask | `arm-none-eabi-gcc` |
 | `make test-qemu` | **runs** the self-test and a PRIMASK-restoration check on emulated Cortex-M0, M3, M4 and M7 | `qemu-system-arm` |
-| `make mutate` | injects 50 deliberate bugs into `pool.c`, one at a time, and checks the tests notice | both |
+| `make mutate` | injects 56 deliberate bugs into `pool.c` and `pool.h`, one at a time, and checks the tests notice (53 caught, 3 provably equivalent) | both |
 
 What has actually been run: all of the above on this computer (a 64-bit Mac, which also checks that
 nothing assumes 32-bit pointers); the self-test on the four emulated cores; the self-test and the

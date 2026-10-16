@@ -27,6 +27,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "pool_config.h"
 
 /* Set up the pools. Returns 0, or -1 if the configuration is invalid (sizes not strictly
  * ascending): treat that as a fatal programming error. Run it once, before any other call:
@@ -37,6 +38,22 @@ int pool_init(void);
 /* Allocate at least `size` bytes. Returns NULL if size is 0, larger than the biggest
  * pool, or the pool is exhausted (counted in the statistics). */
 void *pool_alloc(size_t size);
+
+/* Fixed-size allocation: for a size known at compile time, POOL_ALLOC(n) does what pool_alloc(n)
+ * does but the compiler works out which pool at build time, so the run-time size-to-pool step
+ * disappears (measured on a Cortex-M4: see the stm32 README). n is any constant expression;
+ * the result is NULL if n is 0 or larger than the biggest pool (counted as too_big).
+ *     struct msg *m = POOL_ALLOC(sizeof *m);
+ * It needs the same pool table the library was built with (so the same POOL_USER_CONFIG / -D
+ * flags in every file), and optimisation on (at -O0 it is just a slower pool_alloc). */
+void *pool_alloc_class(size_t class_index);       /* the pool with that index (0 = smallest); out of range -> NULL */
+#define POOL__LT_(block_size, count) + ((size_t)(block_size) < pool_sz_)
+#define POOL__ONE_(block_size, count) + 1
+static inline size_t pool_class_of(size_t pool_sz_)   /* index of the smallest pool that fits; >= pool_count() if none */
+{
+    return pool_sz_ == 0 ? (size_t)(0 POOL_TABLE(POOL__ONE_)) : (size_t)(0 POOL_TABLE(POOL__LT_));
+}
+#define POOL_ALLOC(n) pool_alloc_class(pool_class_of(n))
 
 /* Return a block. NULL is ignored. Pointers that did not come from pool_alloc(), that
  * point into the middle of a block, or (with POOL_DEBUG) that were already freed are
