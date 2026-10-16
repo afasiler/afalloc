@@ -16,6 +16,7 @@
 #
 # POOL_DEBUG=0|1    the pool's extra checks (default 1; bench builds default 0).
 # POOL_IRQ_SAFE=0|1 interrupt masking inside alloc/free (default 1; 0 shows what it costs).
+# POOL_TRACK_PEAK=0|1 per-pool peak usage counter (default 1; 0 saves a few cycles per alloc).
 # CLOCK_MHZ=96|100  CPU clock from the PLL (default 96: the HSI is only +-1 % accurate, see clock.h).
 # Close any running `openocd` before `make flash`: the ST-Link accepts one client.
 
@@ -56,19 +57,20 @@ ifndef POOL_DEBUG
 endif
 
 POOL_IRQ_SAFE ?= 1
+POOL_TRACK_PEAK ?= 1
 CLOCK_MHZ ?= 96
 
 # Cortex-M4 with the single-precision FPU, Thumb instructions.
 CPU    = -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16
 CFLAGS = $(CPU) -std=gnu11 -O2 -g -Wall -Wextra -ffreestanding -ffunction-sections -fdata-sections \
-         -Isrc -DAPP_NAME=\"$(APP)\" -DPOOL_DEBUG=$(POOL_DEBUG) -DPOOL_IRQ_SAFE=$(POOL_IRQ_SAFE) \
+         -Isrc -DAPP_NAME=\"$(APP)\" -DPOOL_DEBUG=$(POOL_DEBUG) -DPOOL_IRQ_SAFE=$(POOL_IRQ_SAFE) -DPOOL_TRACK_PEAK=$(POOL_TRACK_PEAK) \
          -DCLOCK_MHZ=$(CLOCK_MHZ) -MMD -MP
 # The benchmark: pin function and loop alignment to the flash line size (16 bytes) so code
 # placement does not shift the timing by a cycle or two between builds.
 ifneq (,$(filter bench bench_malloc,$(APP)))
   CFLAGS += -falign-functions=16 -falign-loops=16
 endif
-BUILD_INFO = $(APP) -O2 POOL_DEBUG=$(POOL_DEBUG) POOL_IRQ_SAFE=$(POOL_IRQ_SAFE) CLOCK_MHZ=$(CLOCK_MHZ)
+BUILD_INFO = $(APP) -O2 POOL_DEBUG=$(POOL_DEBUG) POOL_IRQ_SAFE=$(POOL_IRQ_SAFE) POOL_TRACK_PEAK=$(POOL_TRACK_PEAK) CLOCK_MHZ=$(CLOCK_MHZ)
 CFLAGS += -DBUILD_INFO='"$(BUILD_INFO)"'
 
 # startup.c runs before the FPU is enabled: forbid the compiler from using FP/vector registers there.
@@ -155,6 +157,15 @@ host-test-white:
 	build/test_pool_whitebox_spill
 	$(HOSTCC) $(HOSTFLAGS) -DPOOL_DEBUG=0 host/test_pool_whitebox.c -o build/test_pool_whitebox_release
 	build/test_pool_whitebox_release
+	@# Tables whose pools are NOT a multiple of the owner granule (padding between pools), one pool, big blocks.
+	@for cfg in "-D'POOL_TABLE(X)=X(8,3)'" "-D'POOL_TABLE(X)=X(8,3) X(16,5) X(32,7)'" \
+	            "-DPOOL_SPILL=1 -D'POOL_TABLE(X)=X(8,3) X(16,5) X(32,7)'" "-DPOOL_DEBUG=0 -D'POOL_TABLE(X)=X(8,9) X(64,3) X(1024,2)'" \
+	            "-DPOOL_OWNER_GRANULE=8 -D'POOL_TABLE(X)=X(8,3) X(16,5)'" "-DPOOL_OWNER_GRANULE=256 -D'POOL_TABLE(X)=X(8,3) X(16,5) X(512,2)'" \
+	            "-DPOOL_EXPECT_BAD_TABLE -D'POOL_TABLE(X)=X(16,2) X(16,3)'" "-DPOOL_EXPECT_BAD_TABLE -D'POOL_TABLE(X)=X(32,2) X(16,3)'" ; do \
+	  printf "%-78s" "[$$cfg]"; \
+	  eval $(HOSTCC) $(HOSTFLAGS) $$cfg host/test_pool_whitebox.c -o build/test_pool_whitebox_cfg || exit 1; \
+	  build/test_pool_whitebox_cfg | tail -1; \
+	done
 
 # The same unit tests under many pool configurations: tiny pools, one pool, big blocks, both debug modes, spill.
 host-test-configs:

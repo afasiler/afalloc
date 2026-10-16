@@ -23,7 +23,7 @@ on top, with a cycle-accurate benchmark against newlib's `malloc`.
 FLASH 0x0800 0000  vector table (408 B) | code + constants | copy of .data
 RAM   0x2000 0000  .data | .bss | .pool_mem (the pools) | ... free ... | stack <-- 0x2002 0000
 ```
-The pools are static arrays in `.pool_mem`. The linker also accounts for 4 KB of stack
+The pools share one static arena in `.pool_mem` (each pool starts on a 64-byte boundary). The linker also accounts for 4 KB of stack
 (`_Min_Stack_Size`): if data + pools + stack do not fit in 128 KB, the **link** fails
 ("region RAM overflowed"). The stack itself lives at the top of RAM and grows down; nothing
 detects an overflow yet (the planned guard is an MPU region).
@@ -65,19 +65,36 @@ available (N=100, Q=5) for experiments. `clock_init_pll()` also waits for the vo
 regulator (`PWR_CSR.VOSRDY`), works if called a second time, and puts the chip back on the HSI
 if any step fails.
 
-## The pool allocator in one paragraph
+## The pool allocator
 
 Memory is split ahead of time into pools of equally sized blocks (sizes are powers of two,
 set in `src/pool_config.h`). `pool_alloc(n)` picks the smallest pool whose blocks fit and pops
 the first block off that pool's free list; `pool_free(p)` pushes it back. The link to the next
-free block is stored inside the free block itself, so blocks need **no header**. With
-`POOL_DEBUG=0` both calls take a bounded number of steps (one comparison per pool, then a handful
-of instructions), there is no search and no fragmentation inside a pool, and the critical section
-(interrupts masked) lasts a few instructions, so they are safe from interrupt handlers (not from
-NMI/HardFault, which PRIMASK cannot mask). With `POOL_DEBUG=1` a bitmap catches double frees,
-freed blocks are filled with a poison pattern so writes after free are detected by `pool_check()`,
-and a free-list link that was overwritten is abandoned instead of followed; that build is for
-catching bugs, not for timing. The release build trusts the caller (a double free is not detected).
+free block is stored inside the free block itself, so blocks need **no header**.
+
+With `POOL_DEBUG=0` both calls take a **fixed number of steps, whatever the request size or the
+number of pools** (measured on the board: identical cycle counts for 16, 64 and 256 B):
+- *alloc* turns the size into a pool with a count-leading-zeros instruction and a 32-byte lookup
+  table (`route[]`), then pops;
+- *free* finds the owning pool from the pointer with one table read: the arena is divided into
+  64-byte granules (`POOL_OWNER_GRANULE`) and `owner_map[]` holds one byte per granule naming its
+  pool. A pool whose size is not a multiple of the granule leaves up to 63 bytes of padding, which
+  `pool_free` refuses as "not a block";
+- the uncommon cases (empty free list, refused free) are out of line, so the common path is a
+  short leaf function with no stack frame.
+
+Cost of this in RAM, for the current 5 pools: `owner_map` 176 B (pool memory / 64), `route` 32 B,
+and each pool descriptor is padded to 64 B (so `&pools[i]` is a shift). Pool memory itself is
+unchanged (11264 B). There is no search and no fragmentation inside a pool, and the critical
+section (interrupts masked) lasts a few instructions, so both calls are safe from interrupt
+handlers (not from NMI/HardFault, which PRIMASK cannot mask). Per-pool peak usage tracking
+(`POOL_TRACK_PEAK`, default on) costs 6 cycles per alloc and is the number to read when sizing the
+pools.
+
+With `POOL_DEBUG=1` a bitmap catches double frees, freed blocks are filled with a poison pattern so
+writes after free are detected by `pool_check()`, and a free-list link that was overwritten is
+abandoned instead of followed; that build is for catching bugs, not for timing. The release build
+trusts the caller (a double free is not detected).
 
 ## The benchmark: what it measures and what it cannot tell you
 
@@ -89,6 +106,23 @@ single inline-assembly block (`ldr counter / blx fn / ldr counter`), so the comp
 instructions into the measured window; `make check-bench-windows` proves it. The cost of measuring
 (an empty call through a function pointer) is calibrated the same way and subtracted. The banner
 prints the build flags and warns if the clock setup failed.
+
+### Results measured on the board (96 MHz, `-O2`, `POOL_DEBUG=0`, net cycles per call)
+
+| | first version | now | newlib-nano `malloc` |
+|---|---|---|---|
+| alloc 16 / 64 / 256 B | 43 / 61 / 79 | **36 / 36 / 36** | 86 / 90 / 90 |
+| free 16 / 64 / 256 B | 56 / 76 / 96 | **40 / 40 / 40** | 52 / 67 / 67 |
+| random 8..256 B workload, alloc (p50 / max) | 79 / 92 | 36 / 55 | 104 / 266 |
+| random workload, free (p50 / max) | 95 / 95 | 40 / 40 | 81 / 130 |
+| cold (caches flushed) alloc / free 64 B | 81 / 90 | 45 / 46 | 134 / 94 |
+
+(36 cycles = 375 ns at 96 MHz.) The first version found its pool and its owner by looping over the
+pools, so it got slower for bigger blocks (and its free was slower than `malloc`'s); the table
+lookups removed that. What the knobs cost, measured the same way: interrupt safety
+(`POOL_IRQ_SAFE=1` vs `0`) is 5 cycles on alloc and 3 on free; peak tracking
+(`POOL_TRACK_PEAK=1` vs `0`) is 6 cycles on alloc and nothing on free. These are one run each on
+one board; the pool numbers are exactly repeatable (min = max), `malloc`'s vary with the heap state.
 
 Read the results with these differences in mind:
 - the pool is built `-O2` from source; newlib-nano is a prebuilt `-Os` library;
@@ -104,9 +138,11 @@ Read the results with these differences in mind:
 
 | Claim | Verified by | Where |
 |---|---|---|
-| Pool logic is correct (routing, exhaustion, reuse, bad/double frees, no overlap, stress) | 12 unit tests under sanitizers, 11 pool configurations, `-O0/-O1/-O2/-Os` | `make host-test-all` |
-| `pool_check()`, spill accounting, the boundary between adjacent pools, refusal of a damaged free list | white-box tests that corrupt the pool's own state | `make host-test-white` |
-| The tests themselves catch bugs | 22 deliberate bugs injected into `pool.c` one at a time: 20 caught, the other 2 cannot change behaviour (see mutation testing below) | mutation run |
+| Pool logic is correct (routing, exhaustion, reuse, bad/double frees, no overlap, stress) | 12 unit tests under sanitizers, 11 pool configurations, `-O0/-O1/-O2/-Os`; also on the board (self-test) | `make host-test-all`, `make APP=selftest flash` |
+| `pool_check()`, spill accounting, refusal of a damaged free list, rejection of a bad table | white-box tests that corrupt the pool's own state, on 12 table/granule/debug combinations | `make host-test-white` |
+| Every request size reaches the smallest pool that fits; every byte of the arena maps to the right owner (including padding between pools) | exhaustive white-box loops against a brute-force search | `make host-test-white` |
+| Alloc/free restore the interrupt mask on every path (fast, slow, refused, statistics), also when it was already masked | PRIMASK read back on the emulated core | `make emu-test` |
+| The tests themselves catch bugs | 50 deliberate bugs injected into `pool.c` one at a time: 47 caught, the other 3 cannot change behaviour (see mutation testing below) | mutation run |
 | Same logic on a real 32-bit Cortex-M4 (4-byte pointers, Thumb-2) | QEMU with the real startup code and linker script | `make emu-test` |
 | Startup copies all of `.data`, clears all of `.bss` (RAM pre-filled with 0xA5), SP is 8-byte aligned | QEMU test; 12 bugs injected into startup/vector table/linker: all 12 caught | `make emu-test` |
 | Vector table slots are right | QEMU: SVC, PendSV, SysTick, IRQ 28, 38 and 85 (the last entry) are each triggered and must reach exactly their own handler | `make emu-test` |
@@ -142,14 +178,17 @@ program loop forever). A baseline run of the unmodified code must pass first.
 
 | Where the bugs went | Injected | Caught | Not caught |
 |---|---|---|---|
-| `pool.c` (routing, bounds, free-list checks, every `pool_check()` code, spill accounting, statistics, ...) | 22 | 20 | 2, both **equivalent** (below) |
+| `pool.c` (size routing, owner map, free-list checks, every `pool_check()` code, spill accounting, statistics, ...) | 45 | 42 | 3, all **equivalent** (below) |
+| `pool.c`, forgetting to restore the interrupt mask (invisible on the host, so they run on the emulator) | 5 | 5 | 0 |
 | `startup.c`, the vector table and `linker.ld` (missing/short `.bss` clear, short `.data` copy, no FPU enable, wrong Reset/PendSV/SysTick/TIM2/SPI5 slot, misaligned SP, `.data` load address off by a word, no `KEEP`) | 12 | 12 | 0 |
 
-The two that cannot be caught change no behaviour, so no test could tell them apart from the
+The three that cannot be caught change no behaviour, so no test could tell them apart from the
 original: (1) starting the lending loop at the pool itself instead of the next one only retries a
 pool that just failed and fails again without side effects; (2) not zeroing the free bitmap in
-`init_one` is invisible because a block can only be freed once it has been handed out (`fresh`
-gating), and handing it out sets its bit anyway.
+`init_one` is invisible because a block can only be freed once it has been handed out (`used`
+gating), and handing it out sets its bit anyway; (3) letting the routing-table fill run one entry
+past the last pool only changes entries for sizes that the size-limit check rejects before the table
+is read.
 
 Mutation testing also exposed problems in the **test setup**, each of which had made a test pass
 without proving anything:
@@ -159,38 +198,48 @@ without proving anything:
 - QEMU's ELF loader zeroes the `.bss` segment itself, which hides a missing `.bss` clear: the firmware
   is now loaded as a raw flash image (`fw.bin`) so only the startup code can clear `.bss`;
 - the statistics-reset test never made the counters non-zero before resetting them;
-- the spill test never exercised a chain of two empty pools.
+- the spill test never exercised a chain of two empty pools;
+- nothing checked that the interrupt mask is restored: five mutants that forget `irq_restore` all
+  passed until the emulator test was taught to read PRIMASK back (found while optimising, when
+  those paths were rewritten);
+- nothing checked that a table that is not strictly ascending is rejected by `pool_init()`.
 
 All were fixed and the runs repeated, under a UTF-8 locale.
 
-## NOT yet verified on the board (do these first, in order)
+## Board bring-up: what was checked on the real board, and what was not
 
-These run only on real hardware. Each has an exact expected value so a mismatch points at the cause.
+Checked on a Nucleo-F411RE (ST-Link V2J33M25, 3.24 V), with the registers read back over OpenOCD
+and the serial output captured from the ST-Link virtual COM port:
 
-1. `make APP=blink flash`. Expected LED: **1 blink** (alive, cycle counter works), then **2 blinks**
-   (the PLL clock is running), then 1 blink per second. 5 fast blinks = PLL setup failed (the serial
-   log says at which stage); endless triple blink = no cycle counter.
-2. Serial: `screen /dev/cu.usbmodem* 115200` shows `HCLK  = 96000000 Hz` and `tick N` lines.
-3. Read back the registers (OpenOCD telnet, `nc localhost 4444`) and compare (96 MHz default):
+| Check | Expected | Seen |
+|---|---|---|
+| `make APP=blink flash` | writes and verifies | `Verified OK` |
+| `RCC_CFGR` | `0x0000100A` | `0x0000100A` |
+| `RCC_PLLCFGR` | `0x24001808` | `0x24001808` |
+| `FLASH_ACR` | `0x00000703` | `0x00000703` |
+| `PWR_CR` / `PWR_CSR` bit 14 (`VOSRDY`) | `0x0000C000` / set | `0x0000C000` / `0x00004000` |
+| `USART2_BRR` | `0x000001A1` | `0x000001A1` |
+| `DWT_CTRL` bit 0 / `CPACR` | set / `0x00F00000` | `0x40000001` / `0x00F00000` |
+| Serial banner | `HCLK = 96000000 Hz`, `PCLK1 = 48000000 Hz` | exactly that, then `tick N` |
+| `make APP=selftest flash` | every test ok | 12 tests ok, `SELFTEST PASSED` (also after each optimisation) |
+| `make APP=bench flash`, `make APP=bench_malloc flash` | tables | see the results above |
 
-   | Register | Address | Expected after clock init |
-   |---|---|---|
-   | `RCC_CFGR` | `0x40023808` | `0x0000100A` (SW = SWS = PLL, APB1 /2) |
-   | `RCC_PLLCFGR` | `0x40023804` | `0x24001808` (M=8, N=96, P=/2, Q=4, reserved bit 29 kept) |
-   | `RCC_CR` | `0x40023800` | bits 24 and 25 set (PLLON, PLLRDY), bits 0 and 1 set (HSI) |
-   | `FLASH_ACR` | `0x40023C00` | `0x00000703` (3 wait states + prefetch + both caches) |
-   | `PWR_CR` | `0x40007000` | `0x0000C000` (voltage scale 1) |
-   | `PWR_CSR` | `0x40007004` | bit 14 set (`VOSRDY`) |
-   | `USART2_BRR` | `0x40004408` | `0x000001A1` = 417 (48 MHz / 115200, about -0.08 % error) |
-   | `DWT_CTRL` | `0xE0001000` | bit 0 set (cycle counter running) |
-   | `CPACR` | `0xE000ED88` | `0x00F00000` (FPU enabled) |
+Still not verified:
+- the LED blink pattern of `blink` (1 blink, 2 blinks, then one per second) was not observed by
+  eye in this round;
+- the real accuracy of the 96 MHz clock: the HSI is only +-1 % at 25 C (+-5 % over temperature),
+  and the only reference seen is that the 115200-baud text decodes correctly. Nothing was measured
+  against an external time base;
+- `CLOCK_MHZ=100` was never run;
+- the first bytes after every reset are garbage on the serial line; the cause (the ST-Link
+  re-applying the baud rate, or a glitch on TX while the pin is configured) was not investigated;
+- the benchmark covers a small set of synthetic scenarios (see above), not a real workload;
+- the firmware has not been run with interrupts actually firing while the pool is in use.
 
-   With `CLOCK_MHZ=100`: `RCC_PLLCFGR` = `0x25001908`, `USART2_BRR` = `0x1B2`, `HCLK = 100000000`.
-   The core addresses (`DWT`, `CPACR`) are not in RM0383 (they are in the Arm core documentation),
-   so they are the likeliest to need a fix.
-4. `make APP=selftest flash`: the serial log should show every test `ok` and the LED stays on.
-5. `make APP=bench flash` and `make APP=bench_malloc flash`: collect both tables, compare. Do not
-   quote cycle counts from anything but these runs.
+To repeat the capture on a Mac, the serial port must be held open while its speed is set (a
+separate `stty` call is forgotten when it exits): start a reader (`cat /dev/cu.usbmodem*`), run
+`stty -f /dev/cu.usbmodem* 115200 cs8 -cstopb -parenb raw -echo` while it is open, then reset the
+board (`openocd -f board/st_nucleo_f4.cfg -c "init; reset run; shutdown"`).
 
 ## Assumptions and open items
 
@@ -199,7 +248,7 @@ These run only on real hardware. Each has an exact expected value so a mismatch 
   `pool_get_stats()` reports the observed peak and the failure count to check the choice. If the
   workload is a neural network, its tensors need one large arena in a separate linker section, not
   pools; the pools then serve only small runtime objects.
-- **Stack size 4 KB is a guess** (the pool test used ~230 B). Measure the real application and adjust
+- **Stack size 4 KB is a guess** (the pool test under the emulator used ~950 B). Measure the real application and adjust
   `_Min_Stack_Size` in `linker.ld`.
 - A stack overflow is not detected yet (planned: an MPU guard region).
 - The clock sequence follows RM0383 p.45 and the PLL section but has only been checked against the

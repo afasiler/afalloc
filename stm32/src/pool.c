@@ -23,20 +23,29 @@ typedef struct {
     uint32_t shift;             /* log2(block_size): index = offset >> shift */
     uint32_t count;             /* number of blocks */
     free_node_t *free_head;     /* top of the free list (LIFO) */
-    uint32_t fresh;             /* blocks [0, fresh) have been handed out at least once */
+    uint32_t used;              /* bytes [0, used) have been handed out at least once (a multiple of the block size) */
     uint32_t in_use, peak, alloc_fail, bad_free, spill_in;
 #if POOL_DEBUG
     uint32_t *bitmap;           /* 1 bit per block, 1 = currently allocated */
 #endif
-} pool_t;
+} __attribute__((aligned(64))) pool_t;  /* 64 bytes: &pools[i] is a shift, not a multiply */
+_Static_assert(sizeof(pool_t) == 64, "pool_t must fit in 64 bytes");
 
 /* ---- static storage generated from POOL_TABLE ---- */
 
-/* One byte array per pool, 8-byte aligned, in .pool_mem. The product is done in size_t so a
-   large table cannot overflow int. */
-#define DEFINE_MEM(size, count) \
-    static uint8_t mem_##size[(size_t)(size) * (count)] POOL_SECTION __attribute__((aligned(8)));
-POOL_TABLE(DEFINE_MEM)
+/* All pools live in ONE arena, each pool starting on a POOL_OWNER_GRANULE boundary. That lets
+ * pool_free() find the owner of a pointer with one table read: owner_map has one byte per
+ * granule, holding the index of the pool that granule belongs to. (A pool whose size is not a
+ * multiple of the granule leaves unused padding at its end; the granule still belongs to it.) */
+#define GRAN ((size_t)POOL_OWNER_GRANULE)
+_Static_assert(POOL_OWNER_GRANULE >= 8 && (POOL_OWNER_GRANULE & (POOL_OWNER_GRANULE - 1)) == 0,
+               "POOL_OWNER_GRANULE must be a power of two >= 8");
+#define ALIGN_UP_GRAN(n) (((size_t)(n) + GRAN - 1) & ~(GRAN - 1))
+#define ADD_PADDED(size, count) + ALIGN_UP_GRAN((size_t)(size) * (count))
+#define ARENA_BYTES (0 POOL_TABLE(ADD_PADDED))
+
+static uint8_t arena[ARENA_BYTES] POOL_SECTION __attribute__((aligned(POOL_OWNER_GRANULE)));
+static uint8_t owner_map[ARENA_BYTES / POOL_OWNER_GRANULE];
 
 #if POOL_DEBUG
 #define DEFINE_BITS(size, count) static uint32_t bits_##size[((count) + 31) / 32];
@@ -46,6 +55,7 @@ POOL_TABLE(DEFINE_BITS)
 /* Compile-time checks on the table. */
 #define CHECK_ENTRY(size, count) \
     _Static_assert((size) >= 8 && ((size) & ((size) - 1)) == 0, "pool block size must be a power of two >= 8"); \
+    _Static_assert((size) <= 0x80000000u, "pool block size must be at most 2 GiB"); \
     _Static_assert((count) >= 1, "pool needs at least one block");
 POOL_TABLE(CHECK_ENTRY)
 
@@ -54,11 +64,27 @@ _Static_assert((0 POOL_TABLE(ADD_BYTES)) <= POOL_MAX_TOTAL_BYTES, "the pools tog
 
 #define PLUS_ONE(size, count) + 1
 #define NUM_POOLS (0 POOL_TABLE(PLUS_ONE))
+_Static_assert(NUM_POOLS <= 255, "owner_map holds the pool index in one byte");
+
+/* The biggest block (the table is strictly ascending, which pool_init() verifies). */
+#define SIZE_ENTRY(size, count) (size),
+static const uint32_t table_sizes[NUM_POOLS] = { POOL_TABLE(SIZE_ENTRY) };
+#define MAX_BLOCK ((size_t)table_sizes[NUM_POOLS - 1])
 
 static pool_t pools[NUM_POOLS];
 static pool_misc_t misc;
 
+/* route[k] = index of the smallest pool whose blocks hold at least 2^k bytes: a request of
+ * `size` bytes goes to route[ceil_log2(size)]. Filled by pool_init(). */
+static uint8_t route[32];
+
 /* ---- small helpers ---- */
+
+/* ceil(log2(size)), but at least 1; size must be >= 1. One CLZ instruction on the Cortex-M4. */
+static inline unsigned ceil_log2(size_t size)
+{
+    return (unsigned)(sizeof(unsigned long) * 8u) - (unsigned)__builtin_clzl((unsigned long)((size - 1u) | 1u));
+}
 
 #if POOL_DEBUG
 static void poison(uint8_t *p, uint32_t n)
@@ -77,7 +103,7 @@ static void init_one(pool_t *p, uint8_t *base, uint32_t size, uint32_t count, ui
         p->shift++;
     p->count = count;
     p->free_head = 0;
-    p->fresh = 0;
+    p->used = 0;
     p->in_use = p->peak = p->alloc_fail = p->bad_free = p->spill_in = 0;
 #if POOL_DEBUG
     p->bitmap = bitmap;
@@ -96,12 +122,26 @@ int pool_init(void)
     uint32_t state = irq_save();
 
     unsigned i = 0;
+    size_t off = 0;
 #if POOL_DEBUG
-#define INIT_ENTRY(size, count) init_one(&pools[i++], mem_##size, (size), (count), bits_##size);
+#define INIT_ENTRY(size, count) \
+    init_one(&pools[i], arena + off, (size), (count), bits_##size); \
+    for (size_t g = 0; g < ALIGN_UP_GRAN((size_t)(size) * (count)) / GRAN; g++) owner_map[off / GRAN + g] = (uint8_t)i; \
+    off += ALIGN_UP_GRAN((size_t)(size) * (count)); i++;
 #else
-#define INIT_ENTRY(size, count) init_one(&pools[i++], mem_##size, (size), (count), 0);
+#define INIT_ENTRY(size, count) \
+    init_one(&pools[i], arena + off, (size), (count), 0); \
+    for (size_t g = 0; g < ALIGN_UP_GRAN((size_t)(size) * (count)) / GRAN; g++) owner_map[off / GRAN + g] = (uint8_t)i; \
+    off += ALIGN_UP_GRAN((size_t)(size) * (count)); i++;
 #endif
     POOL_TABLE(INIT_ENTRY)
+
+    for (unsigned k = 0; k < 32; k++) {
+        unsigned j = 0;
+        while (j + 1 < NUM_POOLS && pools[j].block_size < (1u << k))
+            j++;
+        route[k] = (uint8_t)j;
+    }
 
     misc.zero_size = misc.too_big = misc.unowned_free = misc.corrupt_links = 0;
 
@@ -113,8 +153,46 @@ int pool_init(void)
     return rc;
 }
 
-/* Pop one block from `p`, or NULL. Caller holds the critical section. */
-static void *take(pool_t *p, int lent)
+/* Bookkeeping for a block that has just been handed out. */
+static inline __attribute__((always_inline)) void account(pool_t *p, const void *n, int lent)
+{
+    p->in_use++;
+#if POOL_TRACK_PEAK
+    if (p->in_use > p->peak)
+        p->peak = p->in_use;
+#endif
+    if (lent)
+        p->spill_in++;
+#if POOL_DEBUG
+    {
+        uint32_t idx = (uint32_t)(((const uint8_t *)n - p->base) >> p->shift);
+        p->bitmap[idx >> 5] |= 1u << (idx & 31u);
+    }
+#else
+    (void)n;
+#endif
+}
+
+/* The uncommon case: the free list is empty, so carve a block that was never used, or report
+ * that the pool is exhausted. */
+static void *take_fresh(pool_t *p, int lent)
+{
+    if (p->used >= (p->count << p->shift)) {
+        if (!lent)
+            p->alloc_fail++;
+        return 0;
+    }
+    /* Every block is at least 8-byte aligned (the arena is aligned and block sizes are powers of
+       two >= 8), so this cast is safe; going through void * tells the compiler we know. */
+    free_node_t *n = (free_node_t *)(void *)(p->base + p->used);
+    p->used += p->block_size;
+    account(p, n, lent);
+    return n;
+}
+
+/* Pop a freed block off `p`'s free list, or NULL if the list is empty. The caller holds the
+ * critical section and then calls account(). */
+static inline __attribute__((always_inline)) free_node_t *pop_free(pool_t *p)
 {
     free_node_t *n = p->free_head;
 
@@ -138,68 +216,89 @@ static void *take(pool_t *p, int lent)
     }
 #endif
 
-    if (n) {
+    if (n)
         p->free_head = n->next;                         /* reuse a freed block */
-    } else if (p->fresh < p->count) {
-        /* Every block is at least 8-byte aligned (base is aligned(8), sizes are powers of two >= 8),
-           so this cast is safe; going through void * tells the compiler we know. */
-        n = (free_node_t *)(void *)(p->base + (size_t)p->fresh * p->block_size);   /* first use */
-        p->fresh++;
-    } else {
-        if (!lent)
-            p->alloc_fail++;
-        return 0;
-    }
-
-    p->in_use++;
-    if (p->in_use > p->peak)
-        p->peak = p->in_use;
-    if (lent)
-        p->spill_in++;
-#if POOL_DEBUG
-    {
-        uint32_t idx = (uint32_t)(((uint8_t *)n - p->base) >> p->shift);
-        p->bitmap[idx >> 5] |= 1u << (idx & 31u);
-    }
-#endif
     return n;
 }
 
-void *pool_alloc(size_t size)
-{
-    void *result = 0;
-    uint32_t state = irq_save();
-
-    if (size == 0) {
-        misc.zero_size++;
-    } else {
-        unsigned i = 0;
-        while (i < NUM_POOLS && size > pools[i].block_size)
-            i++;                                        /* smallest pool that fits */
-        if (i == NUM_POOLS) {
-            misc.too_big++;
-        } else {
-            result = take(&pools[i], 0);
 #if POOL_SPILL
-            for (unsigned j = i + 1; result == 0 && j < NUM_POOLS; j++)
-                result = take(&pools[j], 1);
-#endif
-        }
+/* Take one block from `p`, a larger pool lending to a smaller request, or NULL. */
+static void *take_lent(pool_t *p)
+{
+    free_node_t *n = pop_free(p);
+    if (n) {
+        account(p, n, 1);
+        return n;
     }
+    return take_fresh(p, 1);
+}
+#endif
 
+/* Everything pool_alloc() does when the best-fit pool's free list is empty. Out of line, and
+ * given the saved interrupt state to restore, so the common path is a leaf that needs no stack
+ * frame: it ends by jumping here instead of calling and coming back. */
+static __attribute__((noinline)) void *alloc_slow(pool_t *p, uint32_t state)
+{
+    void *result = take_fresh(p, 0);
+#if POOL_SPILL
+    for (unsigned j = (unsigned)(p - pools) + 1; result == 0 && j < NUM_POOLS; j++)
+        result = take_lent(&pools[j]);
+#endif
     irq_restore(state);
     return result;
 }
 
+void *pool_alloc(size_t size)
+{
+    uint32_t state = irq_save();
+
+    /* size - 1 wraps for 0, so one comparison rejects both 0 and "bigger than every pool". */
+    if (__builtin_expect(size - 1u >= MAX_BLOCK, 0)) {
+        if (size == 0)
+            misc.zero_size++;
+        else
+            misc.too_big++;
+        irq_restore(state);
+        return 0;
+    }
+
+    pool_t *p = &pools[route[ceil_log2(size)]];         /* smallest pool that fits: no search */
+    free_node_t *n = pop_free(p);
+    if (__builtin_expect(n != 0, 1)) {
+        account(p, n, 0);
+        irq_restore(state);
+        return n;
+    }
+    return alloc_slow(p, state);
+}
+
+/* The pool whose granule contains `ptr`, or NULL outside the arena. For a pointer in the unused
+ * tail of a pool's last granule this still answers that pool; find_owner() is the exact version. */
+static inline pool_t *granule_owner(const void *ptr)
+{
+    size_t off = (size_t)((uintptr_t)ptr - (uintptr_t)arena);     /* wraps for pointers below the arena */
+    if (off >= ARENA_BYTES)
+        return 0;
+    return &pools[owner_map[off / GRAN]];
+}
+
 static pool_t *find_owner(const void *ptr)
 {
-    uintptr_t a = (uintptr_t)ptr;
-    for (unsigned i = 0; i < NUM_POOLS; i++) {
-        uintptr_t lo = (uintptr_t)pools[i].base;
-        if (a >= lo && a < lo + (uintptr_t)pools[i].count * pools[i].block_size)
-            return &pools[i];
-    }
-    return 0;
+    pool_t *p = granule_owner(ptr);
+    if (p && (uintptr_t)ptr - (uintptr_t)p->base >= ((uintptr_t)p->count << p->shift))
+        return 0;                                                  /* padding after the pool's last block */
+    return p;
+}
+
+/* pool_free() for a pointer it refuses. Out of line (and jumped to, not called) so the common
+ * path stays short; `state` is the interrupt state to restore. */
+static __attribute__((noinline)) void free_refused(pool_t *p, uint32_t off, uint32_t state)
+{
+    if (p == 0 || off >= (p->count << p->shift))
+        misc.unowned_free++;                            /* outside every pool, or in the padding after one */
+    else
+        p->bad_free++;                                  /* middle of a block, never allocated, or double free */
+    irq_restore(state);
 }
 
 void pool_free(void *ptr)
@@ -208,36 +307,35 @@ void pool_free(void *ptr)
         return;
 
     uint32_t state = irq_save();
-    pool_t *p = find_owner(ptr);
-
-    if (p == 0) {
-        misc.unowned_free++;
-    } else {
-        uint32_t off = (uint32_t)((uint8_t *)ptr - p->base);
-        uint32_t idx = off >> p->shift;
-        int ok = (off & (p->block_size - 1u)) == 0u      /* start of a block */
-              && idx < p->fresh;                         /* ...that was handed out before */
-#if POOL_DEBUG
-        if (ok) {
-            uint32_t bit = 1u << (idx & 31u);
-            if ((p->bitmap[idx >> 5] & bit) == 0)        /* already free: double free */
-                ok = 0;
-            else
-                p->bitmap[idx >> 5] &= ~bit;
-        }
-        if (ok)
-            poison((uint8_t *)ptr, p->block_size);
-#endif
-        if (!ok) {
-            p->bad_free++;
-        } else {
-            free_node_t *n = (free_node_t *)ptr;
-            n->next = p->free_head;
-            p->free_head = n;
-            p->in_use--;
-        }
+    pool_t *p = granule_owner(ptr);
+    if (__builtin_expect(p == 0, 0)) {
+        free_refused(0, 0, state);
+        return;
     }
 
+    uint32_t off = (uint32_t)((uint8_t *)ptr - p->base);
+    /* A block we handed out is at the start of a block (off is a multiple of the block size)
+       and below `used`; anything else is refused. */
+    if (__builtin_expect(((off & (p->block_size - 1u)) | (off >= p->used)) != 0, 0)) {
+        free_refused(p, off, state);
+        return;
+    }
+#if POOL_DEBUG
+    {
+        uint32_t idx = off >> p->shift;
+        uint32_t bit = 1u << (idx & 31u);
+        if ((p->bitmap[idx >> 5] & bit) == 0) {          /* already free: double free */
+            free_refused(p, off, state);
+            return;
+        }
+        p->bitmap[idx >> 5] &= ~bit;
+        poison((uint8_t *)ptr, p->block_size);
+    }
+#endif
+    free_node_t *n = (free_node_t *)ptr;
+    n->next = p->free_head;
+    p->free_head = n;
+    p->in_use--;
     irq_restore(state);
 }
 
@@ -301,10 +399,11 @@ uint32_t pool_total_bytes(void)
 static int check_one(const pool_t *p)
 {
     uint32_t listed = 0;
+    uint32_t fresh = p->used >> p->shift;               /* blocks handed out at least once */
 
     for (const free_node_t *n = p->free_head; n != 0; n = n->next) {
         uintptr_t a = (uintptr_t)n;
-        if (listed >= p->fresh)
+        if (listed >= fresh)
             return 1;                                                    /* cycle or too long */
         if (a < (uintptr_t)p->base || a >= (uintptr_t)p->base + (uintptr_t)p->count * p->block_size)
             return 2;                                                    /* link leaves the pool */
@@ -322,7 +421,7 @@ static int check_one(const pool_t *p)
 #endif
         listed++;
     }
-    if (listed + p->in_use != p->fresh)
+    if (listed + p->in_use != fresh)
         return 6;                                                        /* blocks went missing */
     return 0;
 }

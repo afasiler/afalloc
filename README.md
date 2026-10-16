@@ -200,15 +200,18 @@ above; it lives in its own folder because the constraints are different.
   with the reasoning for not using 100 MHz), polled USART2 output.
 - **Debug mode** (`POOL_DEBUG`): double-free detection, poisoning of freed blocks,
   `pool_check()` heap walk, damaged-free-list protection. Release mode trusts the caller.
-- **Measured against `malloc`.** `make APP=bench` and `make APP=bench_malloc` time
-  the pool and newlib-nano `malloc` with the DWT cycle counter on the board.
+- **Constant time, measured on the board.** Alloc takes 36 cycles and free 40 (375 ns and 417 ns at
+  96 MHz) for any block size, against 86-90 and 52-67 for newlib-nano `malloc`, with a worst case
+  that equals the median (`malloc`'s worst case in the same run was 266). Size to pool is a
+  count-leading-zeros plus a table read; pointer to pool is a table read.
 - **Verified without the board:** unit tests under ASan/UBSan across 11 pool
   configurations, white-box tests, the real startup code and linker script run on an
-  emulated Cortex-M4 (QEMU), and mutation testing (22 bugs injected into the pool:
-  20 caught, 2 provably equivalent; 12 into startup/vector table/linker: all 12 caught).
-- **Not yet verified on hardware:** the PLL sequence, the benchmark numbers and the
-  serial output. The board bring-up checklist with the expected register values is in
-  the stm32 README.
+  emulated Cortex-M4 (QEMU), and mutation testing (50 bugs injected into the pool:
+  47 caught, 3 provably equivalent; 12 into startup/vector table/linker: all 12 caught).
+  The same self-test also passes on the board.
+- **Checked on the board:** the clock registers match the manual's values, the serial
+  output works, and the benchmark was run. Not yet checked: the clock's real accuracy,
+  `CLOCK_MHZ=100`, and the allocator under live interrupts. The list is in the stm32 README.
 
 ```bash
 cd stm32

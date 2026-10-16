@@ -3,9 +3,9 @@
  * POOL_TABLE(X) lists the pools as X(block_size, block_count), SMALLEST block size
  * first. Rules:
  *   - block_size is a power of two and at least 8 (so every block is 8-byte aligned and
- *     the owner of a pointer can be found with a mask and a shift, no division);
+ *     the block index inside a pool is a shift, no division);
  *   - block_count is at least 1.
- * The memory is a static array per pool, placed in the .pool_mem section of the linker
+ * The pools share one static arena, placed in the .pool_mem section of the linker
  * script, so if the pools do not fit in RAM together with the stack reserve the LINK
  * fails ("region RAM overflowed") instead of the program failing at run time.
  *
@@ -31,12 +31,27 @@
 #define POOL_MAX_TOTAL_BYTES (96u * 1024u)
 #endif
 
+/* Granularity of the pointer->pool lookup used by pool_free(): the pools are laid out in one
+ * arena, each starting on a multiple of this many bytes, and a table with one byte per granule
+ * names the owner. A pool whose total size is not a multiple of it wastes up to this much;
+ * the table costs (pool memory / granule) bytes of RAM. Power of two, at least 8. */
+#ifndef POOL_OWNER_GRANULE
+#define POOL_OWNER_GRANULE 64
+#endif
+
 /* 1 = extra checks: a bitmap per pool to catch double frees, poison bytes on freed blocks
  * to catch writes after free, a sanity check of every free-list link before it is followed,
  * and pool_check() to verify the free lists. Costs time (free also touches the whole block)
  * and 1 bit per block. Set to 0 for the fastest, constant-time build. */
 #ifndef POOL_DEBUG
 #define POOL_DEBUG 1
+#endif
+
+/* 1 (default) = every pool remembers the most blocks it ever had in use at once (the "peak"
+ * in pool_get_stats()): the number to read when choosing pool sizes. It costs a load, a compare
+ * and a conditional store on every allocation. 0 = no peak tracking (peak stays 0). */
+#ifndef POOL_TRACK_PEAK
+#define POOL_TRACK_PEAK 1
 #endif
 
 /* 1 (default) = alloc/free mask interrupts for their few instructions, so they are safe to

@@ -172,7 +172,10 @@ static int t_exhaust_reuse(void)
                 REQUIRE(slot[j] != slot[k]);     /* every block distinct */
         }
         pool_get_stats(i, &s);
-        REQUIRE(s.in_use == count && s.peak >= count);
+        REQUIRE(s.in_use == count);
+#if POOL_TRACK_PEAK
+        REQUIRE(s.peak >= count);
+#endif
 #if !POOL_SPILL
         uint32_t fails_before = s.alloc_fail;
         REQUIRE(pool_alloc(size) == 0);           /* pool exhausted */
@@ -381,7 +384,10 @@ static int t_stats_and_reset(void)
         pool_free(held[i]);
     pool_stats_t s;
     pool_get_stats(0, &s);
-    REQUIRE(s.in_use == 0 && s.peak == k);
+    REQUIRE(s.in_use == 0);
+#if POOL_TRACK_PEAK
+    REQUIRE(s.peak == k);
+#endif
 
     /* make every resettable counter non-zero, so a reset that forgets one is visible */
     pool_free((void *)&s);                        /* a foreign pointer: unowned_free */

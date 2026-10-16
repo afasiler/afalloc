@@ -2,53 +2,83 @@
  * private state directly. It covers what black-box tests cannot reach:
  *   - the pool_check() error codes that need a damaged internal state (4 and 6);
  *   - a bitmap that contradicts the free list (take() must refuse it);
- *   - the boundary between two ADJACENT pools, as on the board where the pool arrays sit
- *     back to back (on the host the arrays are separate, so the layout is rebuilt here);
+ *   - the boundary between neighbouring pools and the padding between them (the owner map);
+ *   - every request size goes to the smallest pool that fits (the size routing table);
  *   - POOL_SPILL accounting (build with -DPOOL_SPILL=1).
  */
 #include <stdio.h>
 #include <string.h>
 #include "../src/pool.c"
 
+#ifdef POOL_EXPECT_BAD_TABLE
+#pragma GCC diagnostic ignored "-Wunused-function"   /* only the init check runs in this mode */
+#endif
+
 static int failures;
 
 #define EXPECT(cond) do { if (!(cond)) { printf("  FAIL  line %d: %s\n", __LINE__, #cond); failures++; return; } } while (0)
 
-/* ---- put every pool back to back in ONE buffer, like the linker does on the board ---- */
-#define BUF_BYTES (0 POOL_TABLE(ADD_BYTES))
-static uint8_t contiguous[BUF_BYTES] __attribute__((aligned(8)));
-
-static void make_contiguous(void)
+/* Ground truth for "which pool owns this byte", by brute force over the pools. */
+static pool_t *owner_by_search(const uint8_t *a)
 {
-    unsigned i = 0;
-    uint8_t *cur = contiguous;
-#if POOL_DEBUG
-#define CONTIG(size, count) init_one(&pools[i++], cur, (size), (count), bits_##size); cur += (size_t)(size) * (count);
-#else
-#define CONTIG(size, count) init_one(&pools[i++], cur, (size), (count), 0); cur += (size_t)(size) * (count);
-#endif
-    POOL_TABLE(CONTIG)
-    misc.zero_size = misc.too_big = misc.unowned_free = misc.corrupt_links = 0;
+    for (unsigned i = 0; i < NUM_POOLS; i++)
+        if (a >= pools[i].base && a < pools[i].base + ((size_t)pools[i].count << pools[i].shift))
+            return &pools[i];
+    return 0;
 }
 
-static void test_adjacent_pools(void)
+static void test_owner_map(void)
 {
-    puts("adjacent pools: the first byte past a pool belongs to the next pool");
-    make_contiguous();
-    for (unsigned i = 0; i + 1 < NUM_POOLS; i++) {
-        make_contiguous();
-        uint8_t *end = pools[i].base + (size_t)pools[i].count * pools[i].block_size;
-        EXPECT(end == pools[i + 1].base);                        /* really adjacent */
-        EXPECT(find_owner(end - 1) == &pools[i]);                /* last byte: this pool */
-        EXPECT(find_owner(end) == &pools[i + 1]);                /* next byte: the next pool */
+    puts("owner map: every byte of the arena, and the bytes just outside it");
+    pool_init();
+    for (size_t off = 0; off < ARENA_BYTES; off++)
+        EXPECT(find_owner(arena + off) == owner_by_search(arena + off));
+    uintptr_t a0 = (uintptr_t)arena;                             /* integers: pointers outside an array are UB */
+    EXPECT(find_owner((const void *)(a0 - 1)) == 0);
+    EXPECT(find_owner((const void *)(a0 + ARENA_BYTES)) == 0);
+    EXPECT(find_owner((const void *)(a0 + ARENA_BYTES + 1000)) == 0);
+    EXPECT(find_owner((const void *)1) == 0);
+    EXPECT(pool_block_size((const void *)(a0 - 1)) == 0);
 
-        uint32_t bad_i = pools[i].bad_free, bad_next = pools[i + 1].bad_free;
-        pool_free(end);                                          /* block 0 of the next pool, never handed out */
-        EXPECT(pools[i + 1].bad_free == bad_next + 1);
-        EXPECT(pools[i].bad_free == bad_i);
+    puts("neighbouring pools: the first byte past a pool is the next pool's, or padding");
+    for (unsigned i = 0; i + 1 < NUM_POOLS; i++) {
+        pool_init();
+        uint8_t *end = pools[i].base + ((size_t)pools[i].count << pools[i].shift);
+        EXPECT(find_owner(end - 1) == &pools[i]);                /* last byte: this pool */
+        uint32_t bad_i = pools[i].bad_free, bad_next = pools[i + 1].bad_free, unowned = misc.unowned_free;
+        if (end == pools[i + 1].base) {                          /* really adjacent */
+            EXPECT(find_owner(end) == &pools[i + 1]);
+            pool_free(end);                                      /* block 0 of the next pool, never handed out */
+            EXPECT(pools[i + 1].bad_free == bad_next + 1);
+            EXPECT(pools[i].bad_free == bad_i && misc.unowned_free == unowned);
+        } else {                                                 /* padding between the two */
+            EXPECT(find_owner(end) == 0);
+            pool_free(end);                                      /* nobody's block: counted as unowned */
+            EXPECT(misc.unowned_free == unowned + 1);
+            EXPECT(pools[i].bad_free == bad_i && pools[i + 1].bad_free == bad_next);
+        }
     }
-    EXPECT(find_owner(pools[0].base - 1) == 0);
-    EXPECT(find_owner(pools[NUM_POOLS - 1].base + (size_t)pools[NUM_POOLS - 1].count * pools[NUM_POOLS - 1].block_size) == 0);
+}
+
+static void test_routing(void)
+{
+    puts("routing: every size from 1 to the biggest block goes to the smallest pool that fits");
+    for (size_t size = 1; size <= MAX_BLOCK; size++) {
+        pool_init();
+        unsigned want = 0;
+        while (pools[want].block_size < size)
+            want++;
+        void *b = pool_alloc(size);
+        EXPECT(b != 0);
+        EXPECT(find_owner(b) == &pools[want]);
+        EXPECT(pools[want].in_use == 1);
+        pool_free(b);
+        EXPECT(pools[want].in_use == 0);
+    }
+    pool_init();
+    EXPECT(pool_alloc(MAX_BLOCK + 1) == 0 && misc.too_big == 1);
+    EXPECT(pool_alloc((size_t)-1) == 0 && misc.too_big == 2);
+    EXPECT(pool_alloc(0) == 0 && misc.zero_size == 1);
 }
 
 static void test_check_codes_that_need_internal_state(void)
@@ -136,13 +166,30 @@ static void test_spill_accounting(void)
 }
 #endif
 
+/* pool_init() accepts a valid table and rejects one that is not strictly ascending (build with
+ * -DPOOL_EXPECT_BAD_TABLE and such a table to check the rejection). */
+static void test_init_result(void)
+{
+#ifdef POOL_EXPECT_BAD_TABLE
+    puts("pool_init: a table that is not strictly ascending is rejected");
+    EXPECT(pool_init() == -1);
+#else
+    puts("pool_init: a valid table is accepted");
+    EXPECT(pool_init() == 0);
+#endif
+}
+
 int main(void)
 {
     printf("pool white-box tests: %u pools, POOL_DEBUG=%d POOL_SPILL=%d\n", (unsigned)NUM_POOLS, POOL_DEBUG, POOL_SPILL);
-    test_adjacent_pools();
+    test_init_result();
+#ifndef POOL_EXPECT_BAD_TABLE
+    test_owner_map();
+    test_routing();
     test_check_codes_that_need_internal_state();
 #if POOL_SPILL
     test_spill_accounting();
+#endif
 #endif
     if (failures) {
         printf("FAILED: %d\n", failures);

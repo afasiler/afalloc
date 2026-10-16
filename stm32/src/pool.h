@@ -10,8 +10,9 @@
  * call from interrupt handlers as well as from main code (interrupts are masked for the few
  * instructions that touch shared state), except from NMI and HardFault, which PRIMASK cannot mask.
  *
- * Timing. With POOL_DEBUG=0 alloc and free take a bounded number of steps: one comparison
- * per pool to find the right one, then a handful of instructions. With POOL_DEBUG=1 free also
+ * Timing. With POOL_DEBUG=0 alloc and free take a fixed number of steps whatever the number of
+ * pools: alloc finds its pool with a count-leading-zeros and a table read, free with a table read
+ * indexed by address, then a handful of instructions. With POOL_DEBUG=1 free also
  * fills the freed block with a poison pattern (time proportional to the block size) and
  * pool_check() walks whole free lists: that build is for catching bugs, not for timing.
  *
