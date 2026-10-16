@@ -31,21 +31,25 @@ SIZE    = $(TOOLCHAIN)arm-none-eabi-size
 
 BUILD = build/$(APP)
 
-COMMON_SRCS = startup.c main.c clock.c board.c uart.c pool.c pool_selftest.c
+# The allocator, its self-test and the benchmark harness are the portable library in ../embedded_pool;
+# everything else here is specific to this board.
+POOLLIB = ../embedded_pool
+COMMON_SRCS = startup.c main.c clock.c board.c uart.c
+LIB_SRCS    = pool.c pool_selftest.c
 APP_SRCS    = apps/app_$(APP).c
 ifneq (,$(filter bench bench_malloc,$(APP)))
-  APP_SRCS += bench_common.c
+  LIB_SRCS += bench_common.c
 endif
 ifeq ($(APP),bench_malloc)
   APP_SRCS += sbrk.c
 endif
 # The emulator test has its own entry point and skips the board-specific parts.
 ifeq ($(APP),emu_selftest)
-  COMMON_SRCS = startup.c uart.c pool.c pool_selftest.c
+  COMMON_SRCS = startup.c uart.c
   APP_SRCS    = emu/emu_main.c
 endif
 SRCS = $(addprefix src/,$(COMMON_SRCS) $(APP_SRCS))
-OBJS = $(SRCS:src/%.c=$(BUILD)/%.o)
+OBJS = $(SRCS:src/%.c=$(BUILD)/%.o) $(LIB_SRCS:%.c=$(BUILD)/lib/%.o)
 
 # The benchmark builds default to the fastest pool (no debug checks).
 ifndef POOL_DEBUG
@@ -63,7 +67,7 @@ CLOCK_MHZ ?= 96
 # Cortex-M4 with the single-precision FPU, Thumb instructions.
 CPU    = -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16
 CFLAGS = $(CPU) -std=gnu11 -O2 -g -Wall -Wextra -ffreestanding -ffunction-sections -fdata-sections \
-         -Isrc -DAPP_NAME=\"$(APP)\" -DPOOL_DEBUG=$(POOL_DEBUG) -DPOOL_IRQ_SAFE=$(POOL_IRQ_SAFE) -DPOOL_TRACK_PEAK=$(POOL_TRACK_PEAK) \
+         -Isrc -I$(POOLLIB)/include -I$(POOLLIB)/ports/cortexm -DPOOL_USER_CONFIG=\"pool_user_config.h\" -DAPP_NAME=\"$(APP)\" -DPOOL_DEBUG=$(POOL_DEBUG) -DPOOL_IRQ_SAFE=$(POOL_IRQ_SAFE) -DPOOL_TRACK_PEAK=$(POOL_TRACK_PEAK) \
          -DCLOCK_MHZ=$(CLOCK_MHZ) -MMD -MP
 # The benchmark: pin function and loop alignment to the flash line size (16 bytes) so code
 # placement does not shift the timing by a cycle or two between builds.
@@ -98,6 +102,10 @@ $(BUILD)/flags.stamp: FORCE | $(BUILD)
 FORCE:
 
 $(BUILD)/%.o: src/%.c $(BUILD)/flags.stamp | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/lib/%.o: $(POOLLIB)/src/%.c $(BUILD)/flags.stamp | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -140,63 +148,27 @@ emu-test:
 	        -device loader,file=build/ram_fill.bin,addr=0x20000000,force-raw=on \
 	        -device loader,file=build/emu_selftest/fw.bin,addr=0x08000000,force-raw=on
 
-# ---- pool unit tests on this computer (no board needed) ----
-HOSTCC ?= cc
-HOSTFLAGS = -std=c11 -Wall -Wextra -g -O1 -DPOOL_HOST -fsanitize=address,undefined -fno-omit-frame-pointer -Isrc
+# ---- tests that run on this computer: they belong to the portable library ----
 host-test:
-	@mkdir -p build
-	$(HOSTCC) $(HOSTFLAGS) host/test_pool_host.c src/pool.c src/pool_selftest.c -o build/test_pool_host
-	build/test_pool_host
-
-# White-box tests (they #include pool.c to corrupt its state); run with and without spill.
+	$(MAKE) --no-print-directory -C $(POOLLIB) test
 host-test-white:
-	@mkdir -p build
-	$(HOSTCC) $(HOSTFLAGS) host/test_pool_whitebox.c -o build/test_pool_whitebox
-	build/test_pool_whitebox
-	$(HOSTCC) $(HOSTFLAGS) -DPOOL_SPILL=1 host/test_pool_whitebox.c -o build/test_pool_whitebox_spill
-	build/test_pool_whitebox_spill
-	$(HOSTCC) $(HOSTFLAGS) -DPOOL_DEBUG=0 host/test_pool_whitebox.c -o build/test_pool_whitebox_release
-	build/test_pool_whitebox_release
-	@# Tables whose pools are NOT a multiple of the owner granule (padding between pools), one pool, big blocks.
-	@for cfg in "-D'POOL_TABLE(X)=X(8,3)'" "-D'POOL_TABLE(X)=X(8,3) X(16,5) X(32,7)'" \
-	            "-DPOOL_SPILL=1 -D'POOL_TABLE(X)=X(8,3) X(16,5) X(32,7)'" "-DPOOL_DEBUG=0 -D'POOL_TABLE(X)=X(8,9) X(64,3) X(1024,2)'" \
-	            "-DPOOL_OWNER_GRANULE=8 -D'POOL_TABLE(X)=X(8,3) X(16,5)'" "-DPOOL_OWNER_GRANULE=256 -D'POOL_TABLE(X)=X(8,3) X(16,5) X(512,2)'" \
-	            "-DPOOL_EXPECT_BAD_TABLE -D'POOL_TABLE(X)=X(16,2) X(16,3)'" "-DPOOL_EXPECT_BAD_TABLE -D'POOL_TABLE(X)=X(32,2) X(16,3)'" ; do \
-	  printf "%-78s" "[$$cfg]"; \
-	  eval $(HOSTCC) $(HOSTFLAGS) $$cfg host/test_pool_whitebox.c -o build/test_pool_whitebox_cfg || exit 1; \
-	  build/test_pool_whitebox_cfg | tail -1; \
-	done
-
-# The same unit tests under many pool configurations: tiny pools, one pool, big blocks, both debug modes, spill.
+	$(MAKE) --no-print-directory -C $(POOLLIB) test-white
 host-test-configs:
-	@mkdir -p build
-	@for cfg in "" "-DPOOL_DEBUG=0" "-DPOOL_SPILL=1" "-DPOOL_DEBUG=0 -DPOOL_SPILL=1" \
-	            "-D'POOL_TABLE(X)=X(8,1)'" "-D'POOL_TABLE(X)=X(8,2) X(16,1)'" \
-	            "-D'POOL_TABLE(X)=X(8,3)'" "-D'POOL_TABLE(X)=X(8,8) X(16,3) X(32,12)'" \
-	            "-D'POOL_TABLE(X)=X(32,100) X(1024,7)'" "-DPOOL_DEBUG=0 -D'POOL_TABLE(X)=X(8,2) X(64,3)'" \
-	            "-DPOOL_SPILL=1 -D'POOL_TABLE(X)=X(8,2) X(16,2) X(64,3)'" ; do \
-	  printf "%-62s" "[$$cfg]"; \
-	  eval $(HOSTCC) $(HOSTFLAGS) $$cfg host/test_pool_host.c src/pool.c src/pool_selftest.c -o build/test_pool_cfg || exit 1; \
-	  build/test_pool_cfg | tail -1; \
-	done
-
-# Everything that runs on this computer.
-host-test-all: host-test host-test-configs host-test-white host-bench-check
-
-# Exercise the benchmark harness on this computer with a fake cycle counter (logic check only).
+	$(MAKE) --no-print-directory -C $(POOLLIB) test-configs
 host-bench-check:
-	@mkdir -p build
-	$(HOSTCC) $(HOSTFLAGS) host/test_bench_host.c src/bench_common.c src/pool.c -o build/test_bench_host
-	build/test_bench_host
+	$(MAKE) --no-print-directory -C $(POOLLIB) test-bench
+host-test-all:
+	$(MAKE) --no-print-directory -C $(POOLLIB) test-all
 
 # Prove on the compiled benchmark that every timed call is exactly: ldr (counter) / blx / ldr
-# (counter), with nothing the compiler could have slipped in between (see TIME_ALLOC in
-# src/bench_common.c).
+# (counter), with nothing the compiler could have slipped in between (see
+# ports/cortexm/bench_window.h in the library).
 check-bench-windows:
 	@mkdir -p build
-	$(CC) $(CPU) -std=gnu11 -O2 -ffreestanding -Isrc -DAPP_NAME=\"check\" -DPOOL_DEBUG=0 \
-	      -falign-functions=16 -falign-loops=16 -c src/bench_common.c -o build/bench_window_check.o
-	python3 host/check_bench_windows.py $(OBJDUMP) build/bench_window_check.o
+	$(CC) $(CPU) -std=gnu11 -O2 -ffreestanding -Isrc -I$(POOLLIB)/include -I$(POOLLIB)/ports/cortexm \
+	      -DPOOL_USER_CONFIG=\"pool_user_config.h\" -DAPP_NAME=\"check\" -DPOOL_DEBUG=0 \
+	      -falign-functions=16 -falign-loops=16 -c $(POOLLIB)/src/bench_common.c -o build/bench_window_check.o
+	python3 $(POOLLIB)/tools/check_bench_windows.py $(OBJDUMP) build/bench_window_check.o
 
 clean:
 	rm -rf build

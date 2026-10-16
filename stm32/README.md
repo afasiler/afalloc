@@ -4,13 +4,21 @@ A bare-metal firmware project for the Nucleo-F411RE: our own startup code, linke
 and register access (no HAL, no RTOS, no C library), and a fixed-size **pool allocator** built
 on top, with a cycle-accurate benchmark against newlib's `malloc`.
 
+> The allocator itself now lives in [`../embedded_pool`](../embedded_pool): a portable library
+> (any Cortex-M, other CPUs with a small port header) with its own README, tests, example configs
+> and mutation tester. This folder is the STM32F411RE firmware around it: startup, linker script,
+> clock, serial, board bring-up, and the numbers measured on the real board.
+
 ## Layers
 
 ```text
  apps/app_*.c     what runs: blink | selftest | bench | bench_malloc
  main.c           ordered bring-up, progress shown on the LED
- pool.c           the allocator (pure C, no hardware access, unit-tested on the Mac)
- bench_common.c   cycle-count harness (works for any malloc/free pair)
+ ../embedded_pool the allocator, its self-test and the benchmark harness: a portable library
+                  (pure C, no hardware access except one interrupt-mask header), documented and
+                  tested on its own; this project is its first user. pool_user_config.h holds
+                  this board's pool table, bench_port.h connects the harness to the DWT counter
+                  and the serial port
  board.c uart.c clock.c dwt.h   LED + delays, serial output, PLL clock, cycle counter
  regs.h           register map, every address/offset taken from DS10314 / RM0383
  startup.c        vector table + Reset_Handler (.data copy, .bss clear, FPU on, call main)
@@ -32,7 +40,7 @@ detects an overflow yet (the planned guard is an MPU region).
 
 | Command | What it does |
 |---|---|
-| `make host-test-all` | everything that runs on the Mac (the four lines below) |
+| `make host-test-all` | everything that runs on the Mac (the four lines below; they run `make -C ../embedded_pool test-all`) |
 | `make host-test` | pool unit tests under the address/UB sanitizers |
 | `make host-test-configs` | the same tests under 11 pool configurations (tiny/one/big pools, debug on/off, spill) |
 | `make host-test-white` | white-box tests that corrupt the pool's private state |
@@ -68,7 +76,7 @@ if any step fails.
 ## The pool allocator
 
 Memory is split ahead of time into pools of equally sized blocks (sizes are powers of two,
-set in `src/pool_config.h`). `pool_alloc(n)` picks the smallest pool whose blocks fit and pops
+set in `src/pool_user_config.h`; all options in `../embedded_pool/include/pool_config.h`). `pool_alloc(n)` picks the smallest pool whose blocks fit and pops
 the first block off that pool's free list; `pool_free(p)` pushes it back. The link to the next
 free block is stored inside the free block itself, so blocks need **no header**.
 
@@ -179,7 +187,7 @@ program loop forever). A baseline run of the unmodified code must pass first.
 | Where the bugs went | Injected | Caught | Not caught |
 |---|---|---|---|
 | `pool.c` (size routing, owner map, free-list checks, every `pool_check()` code, spill accounting, statistics, ...) | 45 | 42 | 3, all **equivalent** (below) |
-| `pool.c`, forgetting to restore the interrupt mask (invisible on the host, so they run on the emulator) | 5 | 5 | 0 |
+| `pool.c`, forgetting to restore the interrupt mask (invisible on the host, so they run on emulated cores) | 5 | 5 | 0 |
 | `startup.c`, the vector table and `linker.ld` (missing/short `.bss` clear, short `.data` copy, no FPU enable, wrong Reset/PendSV/SysTick/TIM2/SPI5 slot, misaligned SP, `.data` load address off by a word, no `KEEP`) | 12 | 12 | 0 |
 
 The three that cannot be caught change no behaviour, so no test could tell them apart from the
@@ -243,7 +251,7 @@ board (`openocd -f board/st_nucleo_f4.cfg -c "init; reset run; shutdown"`).
 
 ## Assumptions and open items
 
-- **Pool sizes are placeholders** (`pool_config.h`: 16/32/64/128/256 B, 11 KB in total). The real
+- **Pool sizes are placeholders** (`src/pool_user_config.h`: 16/32/64/128/256 B, 11 KB in total). The real
   values come from the real workload: for each kind of object, its size and the most alive at once.
   `pool_get_stats()` reports the observed peak and the failure count to check the choice. If the
   workload is a neural network, its tensors need one large arena in a separate linker section, not

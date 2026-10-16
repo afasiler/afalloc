@@ -4,9 +4,9 @@ A dynamic memory allocator written from scratch in C, built to understand what
 actually happens underneath `malloc` and `free`.
 
 The repository contains three generations of Linux allocator, written in order
-(the newest, `mmap/afalloc_persistent.c`, is the canonical one), plus a separate
-bare-metal pool allocator for the STM32F411RE microcontroller in [`stm32/`](stm32/)
-(section 4).
+(the newest, `mmap/afalloc_persistent.c`, is the canonical one), plus a portable
+pool allocator for microcontrollers in [`embedded_pool/`](embedded_pool/) (section 4) and the
+STM32F411RE firmware that uses it on a real board in [`stm32/`](stm32/) (section 5).
 
 ---
 
@@ -183,39 +183,54 @@ cc -Wall -Wextra -g -DARENA_DEMO arena_allocator/arena_malloc.c -o arena && ./ar
 
 ---
 
-## 4. `stm32/` — bare-metal pool allocator for the STM32F411RE
+## 4. `embedded_pool/` — portable fixed-size pool allocator for microcontrollers
 
-A separate project: a fixed-size **block pool** allocator for the Nucleo-F411RE
-(Cortex-M4F, 128 KB SRAM, no MMU, no OS), with its own startup code, linker script,
-clock setup and cycle-accurate benchmark. It shares nothing with the Linux allocators
-above; it lives in its own folder because the constraints are different.
+A separate, hardware-independent library for MCUs with no MMU and no OS: **pools of equally sized
+blocks**, configured with a small header (`POOL_TABLE`), one `.c` file to add to a build.
+It shares nothing with the Linux allocators above.
 
-- **Static pools, no per-block header.** Blocks of 16/32/64/128/256 bytes live in
-  arrays placed by the linker. A free block stores the link to the next free block
-  in its own first bytes, so a 16-byte request costs exactly 16 bytes. `alloc` and
-  `free` are a pop and a push on a free list: O(1), no loops, no division
-  (the owning pool is found by address range, the block index by a shift).
-- **Bare metal.** No HAL, no RTOS, no libc: own vector table (checked against
-  RM0383 Table 37), reset handler, `-nostdlib` build, PLL clock (96 MHz default,
-  with the reasoning for not using 100 MHz), polled USART2 output.
-- **Debug mode** (`POOL_DEBUG`): double-free detection, poisoning of freed blocks,
-  `pool_check()` heap walk, damaged-free-list protection. Release mode trusts the caller.
-- **Constant time, measured on the board.** Alloc takes 36 cycles and free 40 (375 ns and 417 ns at
-  96 MHz) for any block size, against 86-90 and 52-67 for newlib-nano `malloc`, with a worst case
-  that equals the median (`malloc`'s worst case in the same run was 266). Size to pool is a
-  count-leading-zeros plus a table read; pointer to pool is a table read.
-- **Verified without the board:** unit tests under ASan/UBSan across 11 pool
-  configurations, white-box tests, the real startup code and linker script run on an
-  emulated Cortex-M4 (QEMU), and mutation testing (50 bugs injected into the pool:
-  47 caught, 3 provably equivalent; 12 into startup/vector table/linker: all 12 caught).
-  The same self-test also passes on the board.
-- **Checked on the board:** the clock registers match the manual's values, the serial
-  output works, and the benchmark was run. Not yet checked: the clock's real accuracy,
-  `CLOCK_MHZ=100`, and the allocator under live interrupts. The list is in the stm32 README.
+- **Constant time.** Alloc and free take the same number of steps for every block size and any
+  number of pools: size to pool by a count-leading-zeros and a 32-byte table, address to pool by
+  a table read. Measured on a Cortex-M4 at 96 MHz: alloc 36 cycles, free 40, always (newlib-nano
+  `malloc` in the same run: 86-90 and 52-67, worst case 266).
+- **No per-block header**, no fragmentation inside a pool, static memory (the link fails if it does
+  not fit), interrupt safe on any Cortex-M (PRIMASK), a debug mode with double-free, write-after-free
+  and corrupted-free-list detection.
+- **Ports.** Hardware is isolated in one small header: Cortex-M0/M0+/M3/M4/M7/M33 work as is; other
+  CPUs supply two inline functions or build single-context. Example configs for a small Cortex-M0
+  class part and the STM32F411RE are in `embedded_pool/configs/`.
+- **Tested.** Unit, white-box and config-matrix tests under sanitizers; the self-test **run** on
+  emulated Cortex-M0, M3, M4 and M7 (QEMU) and on a real Cortex-M4; mutation testing (50 injected
+  bugs: 47 caught, 3 provably equivalent). Compile-checked, not run, for M0+ at several
+  optimisation levels. Not run on real M0/M3/M7/M33 silicon or with compilers other than GCC/clang.
+
+```bash
+cd embedded_pool
+make test-all     # host tests (needs a C compiler)
+make test-qemu    # the self-test on emulated Cortex-M0/M3/M4/M7 (needs QEMU + arm-none-eabi-gcc)
+```
+
+Usage, options, sizing advice and the full test table: [`embedded_pool/README.md`](embedded_pool/README.md).
+
+---
+
+## 5. `stm32/` — the firmware that uses it on a real board
+
+Bare-metal firmware for the Nucleo-F411RE (Cortex-M4F, 128 KB SRAM): own startup code, linker script,
+PLL clock setup (96 MHz) and serial output, no HAL, no RTOS, no libc. It builds the library into
+four applications (`blink`, `selftest`, `bench`, `bench_malloc`) and runs the benchmark against
+newlib's `malloc` with the DWT cycle counter.
+
+- **Checked on the board:** the clock registers match the manual's values, the serial output works,
+  the pool self-test passes, and the benchmark was run. **Not yet checked:** the clock's real accuracy,
+  `CLOCK_MHZ=100`, and the allocator under live interrupts. The list, with expected register values
+  and the measured results, is in the stm32 README.
+- **Emulator test:** the real startup code and linker script run on an emulated Cortex-M4,
+  with the RAM pre-filled to catch a missing `.bss` clear, vector-slot checks and PRIMASK checks.
 
 ```bash
 cd stm32
-make host-test-all   # everything that runs on the computer
+make host-test-all   # runs the library's host tests
 make emu-test        # real startup + pool on an emulated Cortex-M4 (needs QEMU)
 make APP=blink flash # write the first test program to the board (needs OpenOCD)
 ```
@@ -253,8 +268,8 @@ open items) is in [`stm32/README.md`](stm32/README.md).
 - Backward coalescing for the free lists.
 - Bring `mmap_allocator.c` up to the same safety level, or retire it.
 - Run the test suite on real RV1103 hardware.
-- STM32: bring up the board, run the benchmark on it, and size the pools to the real
-  workload (a quantised neural network is planned) once its memory needs are known.
+- STM32: size the pools to the real workload (a quantised neural network is planned) once its
+  memory needs are known; check the clock's accuracy against an external time base.
 
 ## Why
 

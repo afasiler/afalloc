@@ -1,11 +1,14 @@
 #include "pool.h"
 #include "pool_config.h"
-#include "irq.h"
+#include "pool_port.h"
 
-#ifdef POOL_HOST
-#define POOL_SECTION            /* host tests: ordinary static arrays */
+/* Where the pool memory goes. Default: an ordinary static array (the linker puts it in .bss).
+   With -DPOOL_SECTION_NAME='".pool_mem"' it goes into that linker section instead, which lets the
+   linker script show the pools' exact size and place them (the section must be NOLOAD there). */
+#ifdef POOL_SECTION_NAME
+#define POOL_SECTION __attribute__((section(POOL_SECTION_NAME)))
 #else
-#define POOL_SECTION __attribute__((section(".pool_mem")))
+#define POOL_SECTION
 #endif
 
 #define POISON_BYTE 0xDDu
@@ -119,7 +122,7 @@ int pool_init(void)
     int rc = 0;
     /* Masked so an interrupt cannot allocate from a half-initialised pool. Calling this while
        blocks are outstanding makes the pool forget them: that is a caller error. */
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
 
     unsigned i = 0;
     size_t off = 0;
@@ -149,7 +152,7 @@ int pool_init(void)
         if (pools[k].block_size <= pools[k - 1].block_size)
             rc = -1;                                    /* must be strictly ascending */
 
-    irq_restore(state);
+    pool_irq_restore(state);
     return rc;
 }
 
@@ -244,13 +247,13 @@ static __attribute__((noinline)) void *alloc_slow(pool_t *p, uint32_t state)
     for (unsigned j = (unsigned)(p - pools) + 1; result == 0 && j < NUM_POOLS; j++)
         result = take_lent(&pools[j]);
 #endif
-    irq_restore(state);
+    pool_irq_restore(state);
     return result;
 }
 
 void *pool_alloc(size_t size)
 {
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
 
     /* size - 1 wraps for 0, so one comparison rejects both 0 and "bigger than every pool". */
     if (__builtin_expect(size - 1u >= MAX_BLOCK, 0)) {
@@ -258,7 +261,7 @@ void *pool_alloc(size_t size)
             misc.zero_size++;
         else
             misc.too_big++;
-        irq_restore(state);
+        pool_irq_restore(state);
         return 0;
     }
 
@@ -266,7 +269,7 @@ void *pool_alloc(size_t size)
     free_node_t *n = pop_free(p);
     if (__builtin_expect(n != 0, 1)) {
         account(p, n, 0);
-        irq_restore(state);
+        pool_irq_restore(state);
         return n;
     }
     return alloc_slow(p, state);
@@ -298,7 +301,7 @@ static __attribute__((noinline)) void free_refused(pool_t *p, uint32_t off, uint
         misc.unowned_free++;                            /* outside every pool, or in the padding after one */
     else
         p->bad_free++;                                  /* middle of a block, never allocated, or double free */
-    irq_restore(state);
+    pool_irq_restore(state);
 }
 
 void pool_free(void *ptr)
@@ -306,7 +309,7 @@ void pool_free(void *ptr)
     if (ptr == 0)
         return;
 
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
     pool_t *p = granule_owner(ptr);
     if (__builtin_expect(p == 0, 0)) {
         free_refused(0, 0, state);
@@ -336,7 +339,7 @@ void pool_free(void *ptr)
     n->next = p->free_head;
     p->free_head = n;
     p->in_use--;
-    irq_restore(state);
+    pool_irq_restore(state);
 }
 
 size_t pool_block_size(const void *ptr)
@@ -354,7 +357,7 @@ int pool_get_stats(unsigned index, pool_stats_t *out)
 {
     if (index >= NUM_POOLS || out == 0)
         return -1;
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
     const pool_t *p = &pools[index];
     out->block_size = p->block_size;
     out->count = p->count;
@@ -363,7 +366,7 @@ int pool_get_stats(unsigned index, pool_stats_t *out)
     out->alloc_fail = p->alloc_fail;
     out->bad_free = p->bad_free;
     out->spill_in = p->spill_in;
-    irq_restore(state);
+    pool_irq_restore(state);
     return 0;
 }
 
@@ -371,20 +374,20 @@ void pool_get_misc(pool_misc_t *out)
 {
     if (out == 0)
         return;
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
     *out = misc;
-    irq_restore(state);
+    pool_irq_restore(state);
 }
 
 void pool_stats_reset(void)
 {
-    uint32_t state = irq_save();
+    uint32_t state = pool_irq_save();
     for (unsigned i = 0; i < NUM_POOLS; i++) {
         pools[i].peak = pools[i].in_use;
         pools[i].alloc_fail = pools[i].bad_free = pools[i].spill_in = 0;
     }
     misc.zero_size = misc.too_big = misc.unowned_free = misc.corrupt_links = 0;
-    irq_restore(state);
+    pool_irq_restore(state);
 }
 
 uint32_t pool_total_bytes(void)
@@ -431,9 +434,9 @@ int pool_check(void)
     /* One pool per critical section, so interrupts are masked for at most one pool's walk at
        a time. It is still a debugging call, linear in the number of free blocks. */
     for (unsigned i = 0; i < NUM_POOLS; i++) {
-        uint32_t state = irq_save();
+        uint32_t state = pool_irq_save();
         int rc = check_one(&pools[i]);
-        irq_restore(state);
+        pool_irq_restore(state);
         if (rc)
             return rc;
     }

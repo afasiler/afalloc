@@ -1,11 +1,6 @@
 #include <stdint.h>
 #include "bench_common.h"
-#include "clock.h"
-#include "dwt.h"
-#include "uart.h"
-#ifndef POOL_HOST
-#include "regs.h"
-#endif
+#include "bench_port.h"    /* supplied by the application: see bench_common.h for the contract */
 
 typedef void *(*alloc_fn)(size_t);
 typedef void (*free_fn)(void *);
@@ -16,71 +11,26 @@ typedef void (*free_fn)(void *);
 #define BATCH_ROUNDS   200u
 #define CHURN_SLOTS    16u      /* live-object table for the random workload */
 #define CHURN_OPS      20000u
-#define COLD_ITERS     300u     /* operations measured with the flash caches emptied first */
-#define WARMUP         200u     /* untimed iterations so caches and the ART are warm */
+#define COLD_ITERS     300u     /* operations measured with the code cache emptied first */
+#define WARMUP         200u     /* untimed iterations so caches are warm */
 #define HIST_BINS      512u     /* cycle counts 0..510 exactly; the last bin means "511 or more" */
 
 typedef void *(*alloc_fn)(size_t);
 typedef void (*free_fn)(void *);
 
 /* ---- how the timing window is built --------------------------------------------------
- * The counter is read with a volatile load, but the compiler is still free to slide plain
- * instructions (reloading the function pointer from the stack, moving the result, a spill, a
- * compare) between two such loads, and those would be counted as allocator time. So on the
- * target the whole measured sequence is ONE inline-assembly block:
- *        ldr  t0, [counter]      read the cycle counter
- *        blx  fn                 the call being measured
- *        ldr  t1, [counter]      read it again
- * The compiler cannot insert anything inside an asm block. The function pointer and the
- * argument are placed in r3 and r0 before the block; the two timestamps live in callee-saved
- * registers (they must survive the call, and r1, r2, r12 and lr are declared clobbered, which
- * keeps them out of any operand). `make check-bench-windows` proves on the compiled code that
- * every call is exactly ldr / blx / ldr. On the Mac (POOL_HOST) a plain C version with the fake
- * counter is used: there the numbers mean nothing anyway.
- * (The asm declares only the caller-saved CORE registers as clobbered; this file uses no
- * floating point, so no FP register needs declaring.) */
-#ifdef POOL_HOST
-
-#define TIME_ALLOC(res, fn, arg, t0, t1)  do { (t0) = cycles(); (res) = (fn)(arg); (t1) = cycles(); } while (0)
-#define TIME_FREE(fn, ptr, t0, t1)        do { (t0) = cycles(); (fn)(ptr); (t1) = cycles(); } while (0)
-
-#else
-
-#define CALL_CLOBBERS "r1", "r2", "r12", "lr", "memory", "cc"
-#define CYCCNT_PTR ((volatile uint32_t *)&CORE_DWT_CYCCNT)
-
-#define TIME_ALLOC(res, fn, arg, t0, t1)                                              \
-    do {                                                                              \
-        register size_t a0_ __asm("r0") = (arg);                                      \
-        register alloc_fn f3_ __asm("r3") = (fn);                                     \
-        uint32_t s0_, s1_;                                                            \
-        __asm volatile("ldr %[s0], [%[cnt]]\n\t"                                      \
-                       "blx %[f]\n\t"                                                 \
-                       "ldr %[s1], [%[cnt]]"                                          \
-                       : [s0] "=&r"(s0_), [s1] "=&r"(s1_), "+r"(a0_), [f] "+r"(f3_)   \
-                       : [cnt] "r"(CYCCNT_PTR)                                        \
-                       : CALL_CLOBBERS);                                              \
-        (t0) = s0_;                                                                   \
-        (t1) = s1_;                                                                   \
-        (res) = (void *)a0_;                                                          \
-    } while (0)
-
-#define TIME_FREE(fn, ptr, t0, t1)                                                    \
-    do {                                                                              \
-        register void *a0_ __asm("r0") = (ptr);                                       \
-        register free_fn f3_ __asm("r3") = (fn);                                      \
-        uint32_t s0_, s1_;                                                            \
-        __asm volatile("ldr %[s0], [%[cnt]]\n\t"                                      \
-                       "blx %[f]\n\t"                                                 \
-                       "ldr %[s1], [%[cnt]]"                                          \
-                       : [s0] "=&r"(s0_), [s1] "=&r"(s1_), "+r"(a0_), [f] "+r"(f3_)   \
-                       : [cnt] "r"(CYCCNT_PTR)                                        \
-                       : CALL_CLOBBERS);                                              \
-        (t0) = s0_;                                                                   \
-        (t1) = s1_;                                                                   \
-    } while (0)
-
+ * By default each call is timed with two plain counter reads around it. The compiler may slide
+ * ordinary instructions between a read and the call, and those would be counted as allocator
+ * time, so on a real target the port should supply BENCH_TIME_ALLOC / BENCH_TIME_FREE that make
+ * the whole window one inline-assembly block (see ports/cortexm/bench_window.h, which makes every
+ * call exactly ldr / blx / ldr, and tools/check_bench_windows.py, which proves it on the object
+ * file). Without them the numbers are still correct but carry a few cycles of noise. */
+#ifndef BENCH_TIME_ALLOC
+#define BENCH_TIME_ALLOC(res, fn, arg, t0, t1)  do { (t0) = bench_cycles(); (res) = (fn)(arg); (t1) = bench_cycles(); } while (0)
+#define BENCH_TIME_FREE(fn, ptr, t0, t1)        do { (t0) = bench_cycles(); (fn)(ptr); (t1) = bench_cycles(); } while (0)
 #endif
+#define TIME_ALLOC BENCH_TIME_ALLOC
+#define TIME_FREE  BENCH_TIME_FREE
 
 typedef struct {
     uint32_t min, max, n, overhead;
@@ -146,9 +96,9 @@ static void put_padded(uint32_t v, unsigned width)
     unsigned n = 0;
     do { buf[n++] = (char)('0' + v % 10u); v /= 10u; } while (v);
     for (unsigned i = n; i < width; i++)
-        uart_putc(' ');
+        bench_putc(' ');
     while (n)
-        uart_putc(buf[--n]);
+        bench_putc(buf[--n]);
 }
 
 /* value given in tenths, printed as "12.3", right-aligned in `width` columns */
@@ -159,10 +109,10 @@ static void put_tenths(uint64_t tenths, unsigned width)
     for (uint32_t w = whole; w >= 10u; w /= 10u)
         digits++;
     for (unsigned i = digits + 2; i < width; i++)
-        uart_putc(' ');
-    uart_put_u32(whole);
-    uart_putc('.');
-    uart_putc((char)('0' + frac));
+        bench_putc(' ');
+    bench_put_u32(whole);
+    bench_putc('.');
+    bench_putc((char)('0' + frac));
 }
 
 #define LABEL_WIDTH 32u
@@ -170,22 +120,22 @@ static void put_label(const char *label)
 {
     unsigned n = 0;
     while (label[n]) {
-        uart_putc(label[n]);
+        bench_putc(label[n]);
         n++;
     }
     for (; n < LABEL_WIDTH; n++)
-        uart_putc(' ');
+        bench_putc(' ');
 }
 
 static void report(const char *label, const stat_t *s)
 {
     put_label(label);
     if (s->n == 0) {
-        uart_puts("   (no samples)\n");
+        bench_puts("   (no samples)\n");
         return;
     }
     uint64_t avg10 = (s->sum * 10u) / s->n;
-    uint64_t ns10 = (s->sum * 10000000000ull) / ((uint64_t)s->n * clock_hclk_hz());
+    uint64_t ns10 = (s->sum * 10000000000ull) / ((uint64_t)s->n * bench_clock_hz());
     put_padded(s->n, 6);
     put_padded(s->min, 5);
     put_padded(percentile(s, 1, 2), 5);
@@ -194,7 +144,7 @@ static void report(const char *label, const stat_t *s)
     put_padded(percentile(s, 999, 1000), 6);
     put_padded(s->max, 6);
     put_tenths(ns10, 9);
-    uart_puts("\n");
+    bench_puts("\n");
 }
 
 /* ---- calibration: what the measuring itself costs ----------------------------------------
@@ -226,22 +176,13 @@ static void calibrate(void)
     overhead_free = best_f;
 }
 
-#ifdef POOL_HOST
-static void cache_flush(void) {}
-#else
-/* Empty the ART's instruction and data caches (RM0383 p.59: they can only be reset while
- * disabled). The prefetch line already fetched cannot be flushed, so this is "cold" in the
- * sense that matters: the allocator code and data come from the flash again. */
-static void cache_flush(void)
-{
-    uint32_t acr = FLASH->ACR;
-    FLASH->ACR = acr & ~(FLASH_ACR_ICEN | FLASH_ACR_DCEN);
-    FLASH->ACR |= FLASH_ACR_ICRST | FLASH_ACR_DCRST;
-    FLASH->ACR &= ~(FLASH_ACR_ICRST | FLASH_ACR_DCRST);
-    FLASH->ACR = acr;
-    __asm volatile("dsb\n\tisb" : : : "memory");
-}
+/* Empty any instruction/data cache that sits in front of the code memory, so the "cold" scenario
+   measures the allocator coming from slow memory. The port defines BENCH_CACHE_FLUSH(); without
+   one there is nothing to flush (cores with no cache, or a computer) and cold == warm. */
+#ifndef BENCH_CACHE_FLUSH
+#define BENCH_CACHE_FLUSH() ((void)0)
 #endif
+static void cache_flush(void) { BENCH_CACHE_FLUSH(); }
 
 static uint16_t hist_a[HIST_BINS], hist_f[HIST_BINS];
 
@@ -269,13 +210,13 @@ static void scenario_pair(alloc_fn alloc, free_fn release, size_t size, const ch
     report(la, &sa);
     report(lf, &sf);
     if (failed) {
-        uart_puts("  pair allocation failures: ");
-        uart_put_u32(failed);
-        uart_puts("\n");
+        bench_puts("  pair allocation failures: ");
+        bench_put_u32(failed);
+        bench_puts("\n");
     }
 }
 
-/* The same pair, but the flash caches are emptied before each call: what the allocator costs
+/* The same pair, but the code cache is emptied before each call: what the allocator costs
  * when the surrounding code has pushed it out of the cache. */
 static void scenario_cold(alloc_fn alloc, free_fn release, size_t size, const char *la, const char *lf)
 {
@@ -329,9 +270,9 @@ static void scenario_batch(alloc_fn alloc, free_fn release)
     report("batch alloc 64 B", &sa);
     report("batch free  64 B", &sf);
     if (failed) {
-        uart_puts("  batch allocation failures: ");
-        uart_put_u32(failed);
-        uart_puts("\n");
+        bench_puts("  batch allocation failures: ");
+        bench_put_u32(failed);
+        bench_puts("\n");
     }
 }
 
@@ -372,13 +313,13 @@ static void scenario_churn(alloc_fn alloc, free_fn release)
 
     report("random alloc 8..256 B", &sa);
     report("random free", &sf);
-    uart_puts("  random workload: ");
-    uart_put_u32(requested);
-    uart_puts(" allocation requests, ");
-    uart_put_u32((uint32_t)bytes);
-    uart_puts(" bytes requested (must match across allocators), failures: ");
-    uart_put_u32(failed);
-    uart_puts("\n");
+    bench_puts("  random workload: ");
+    bench_put_u32(requested);
+    bench_puts(" allocation requests, ");
+    bench_put_u32((uint32_t)bytes);
+    bench_puts(" bytes requested (must match across allocators), failures: ");
+    bench_put_u32(failed);
+    bench_puts("\n");
 }
 
 void bench_run(const char *name, bench_alloc_fn alloc, bench_free_fn release)
@@ -386,27 +327,27 @@ void bench_run(const char *name, bench_alloc_fn alloc, bench_free_fn release)
     clamped = 0;
     calibrate();
 
-    uart_puts("\n--- benchmark: ");
-    uart_puts(name);
-    uart_puts(" ---\n");
+    bench_puts("\n--- benchmark: ");
+    bench_puts(name);
+    bench_puts(" ---\n");
 #ifdef BUILD_INFO
-    uart_puts("build: " BUILD_INFO " ; gcc " __VERSION__ "\n");
+    bench_puts("build: " BUILD_INFO " ; gcc " __VERSION__ "\n");
 #endif
-    uart_puts("CPU clock ");
-    uart_put_u32(clock_hclk_hz());
-    uart_puts(" Hz");
-    if (clock_hclk_hz() != clock_target_hz()) {
-        uart_puts("  *** WARNING: not at the PLL target of ");
-        uart_put_u32(clock_target_hz());
-        uart_puts(" Hz: the clock setup failed, numbers are for the 16 MHz HSI ***");
+    bench_puts("CPU clock ");
+    bench_put_u32(bench_clock_hz());
+    bench_puts(" Hz");
+    if (bench_clock_hz() != bench_target_hz()) {
+        bench_puts("  *** WARNING: not at the target of ");
+        bench_put_u32(bench_target_hz());
+        bench_puts(" Hz: the clock setup failed, numbers are for the clock actually running ***");
     }
-    uart_puts("\nmeasuring cost subtracted: alloc ");
-    uart_put_u32(overhead_alloc);
-    uart_puts(" cycles, free ");
-    uart_put_u32(overhead_free);
-    uart_puts(" cycles (an empty call through a function pointer, timed the same way)\n");
+    bench_puts("\nmeasuring cost subtracted: alloc ");
+    bench_put_u32(overhead_alloc);
+    bench_puts(" cycles, free ");
+    bench_put_u32(overhead_free);
+    bench_puts(" cycles (an empty call through a function pointer, timed the same way)\n");
     put_label("");
-    uart_puts(" count  min  p50    avg  p99 p99.9   max   avg ns   (net cycles per call)\n");
+    bench_puts(" count  min  p50    avg  p99 p99.9   max   avg ns   (net cycles per call)\n");
 
     scenario_pair(alloc, release, 16,  "pair  alloc 16 B", "pair  free  16 B");
     scenario_pair(alloc, release, 64,  "pair  alloc 64 B", "pair  free  64 B");
@@ -416,9 +357,9 @@ void bench_run(const char *name, bench_alloc_fn alloc, bench_free_fn release)
     scenario_cold(alloc, release, 64, "COLD  alloc 64 B", "COLD  free  64 B");
 
     if (clamped) {
-        uart_puts("note: ");
-        uart_put_u32(clamped);
-        uart_puts(" samples were shorter than the calibrated overhead and were counted as 0\n");
+        bench_puts("note: ");
+        bench_put_u32(clamped);
+        bench_puts(" samples were shorter than the calibrated overhead and were counted as 0\n");
     }
-    uart_puts("--- done ---\n");
+    bench_puts("--- done ---\n");
 }

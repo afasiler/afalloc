@@ -1,20 +1,29 @@
-/* Pool configuration: the ONE place to change the pool sizes.
+/* Pool configuration: the ONE place to change the pool sizes and options.
+ *
+ * Put your settings in a header of your own and point the build at it:
+ *     -DPOOL_USER_CONFIG='"my_pool_config.h"'      (see configs/ for ready-made examples)
+ * or pass single options as -D flags. Anything not set falls back to the defaults below.
  *
  * POOL_TABLE(X) lists the pools as X(block_size, block_count), SMALLEST block size
  * first. Rules:
- *   - block_size is a power of two and at least 8 (so every block is 8-byte aligned and
- *     the block index inside a pool is a shift, no division);
- *   - block_count is at least 1.
- * The pools share one static arena, placed in the .pool_mem section of the linker
- * script, so if the pools do not fit in RAM together with the stack reserve the LINK
- * fails ("region RAM overflowed") instead of the program failing at run time.
+ *   - block_size is a power of two, at least 8 and at most 2 GiB (so every block is 8-byte
+ *     aligned and the block index inside a pool is a shift, no division);
+ *   - block_count is at least 1;
+ *   - sizes strictly ascending (pool_init() returns -1 otherwise).
+ * The pools share one static arena. With POOL_SECTION_NAME it is placed in that linker section,
+ * so if the pools do not fit in RAM the LINK fails ("region RAM overflowed") instead of the
+ * program failing at run time.
  *
- * !!! These numbers are PLACEHOLDERS. The right values come from the real workload:
+ * !!! The default numbers are PLACEHOLDERS. The right values come from the real workload:
  * for each kind of object, its size and the most of them alive at the same time.
  * pool_get_stats() reports the observed peak for each pool to check the choice.
  */
 #ifndef POOL_CONFIG_H
 #define POOL_CONFIG_H
+
+#ifdef POOL_USER_CONFIG
+#include POOL_USER_CONFIG
+#endif
 
 #ifndef POOL_TABLE
 #define POOL_TABLE(X) \

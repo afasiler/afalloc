@@ -12,16 +12,6 @@
 #include <stdint.h>
 #include "regs.h"
 
-#ifdef POOL_HOST
-/* On the Mac there is no cycle counter: a fake one that advances a little on every read,
-   so the benchmark harness can be run and checked for logic errors (the numbers it prints
-   there mean nothing). */
-extern uint32_t host_cycle_counter;
-extern uint32_t host_cycle_step(void);
-static inline int dwt_init(void) { return 0; }
-static inline uint32_t cycles(void) { host_cycle_counter += host_cycle_step(); return host_cycle_counter; }
-#else
-
 /* Returns 0 on success, -1 if this core has no cycle counter. */
 static inline int dwt_init(void)
 {
@@ -38,6 +28,5 @@ static inline uint32_t cycles(void)
     return CORE_DWT_CYCCNT;
 }
 
-#endif /* POOL_HOST */
 
 #endif
