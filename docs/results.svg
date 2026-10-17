@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 490" width="760" height="490" role="img" aria-labelledby="t d">
+<title id="t">Pool allocator vs newlib-nano malloc on a Cortex-M4</title>
+<desc id="d">Cycles per call on an STM32F411RE at 96 MHz, random 8 to 256 byte workload of 10,000 operations. Alloc: pool 36 typical and 55 worst, malloc 104 typical and 266 worst. Free: pool 40 typical and 40 worst, malloc 81 typical and 130 worst.</desc>
+<style>
+.bg{fill:#fcfcfb} .t1{fill:#0b0b0b} .t2{fill:#52514e} .grid{stroke:#e3e2de}
+.pool{fill:#2a78d6} .mal{fill:#eb6834}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.title{font-size:20px;font-weight:600} .sub{font-size:13px} .lab{font-size:14px;fill:#0b0b0b} .val{font-size:14px;font-weight:600;fill:#0b0b0b} .leg{font-size:13px;fill:#0b0b0b} .foot{font-size:12px;fill:#52514e}
+@media (prefers-color-scheme: dark){
+.bg{fill:#1a1a19} .t1{fill:#f0efec} .t2{fill:#c3c2b7} .grid{stroke:#34332f}
+.pool{fill:#3987e5} .mal{fill:#d95926} .lab,.val,.leg{fill:#f0efec} .foot{fill:#c3c2b7}
+}
+</style>
+<rect class="bg" width="760" height="490" rx="10"/>
+<text class="title t1" x="28" y="40">Fixed-size pool vs malloc: cycles per call</text>
+<text class="sub t2" x="28" y="62">Cortex-M4 (STM32F411RE) at 96 MHz &#183; random 8&#8211;256 B workload, 10,000 operations &#183; lower is better</text>
+<rect class="pool" x="28" y="78" width="14" height="14" rx="3"/><text class="leg" x="48" y="90">Pool allocator (this repo)</text>
+<rect class="mal" x="240" y="78" width="14" height="14" rx="3"/><text class="leg" x="260" y="90">newlib-nano malloc/free</text>
+<line class="grid" x1="190" x2="190" y1="110" y2="400"/>
+<text class="lab" x="176" y="144.0" text-anchor="end">alloc, typical (median)</text>
+<path class="pool" d="M190,118 h59.6 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-59.6 z"/>
+<text class="val" x="261.6" y="132.0">36</text>
+<path class="mal" d="M190,142 h179.8 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-179.8 z"/>
+<text class="val" x="381.8" y="156.0">104</text>
+<text class="lab" x="176" y="218.0" text-anchor="end">alloc, worst seen</text>
+<path class="pool" d="M190,192 h93.2 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-93.2 z"/>
+<text class="val" x="295.2" y="206.0">55</text>
+<path class="mal" d="M190,216 h466.0 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-466.0 z"/>
+<text class="val" x="668.0" y="230.0">266</text>
+<text class="lab" x="176" y="292.0" text-anchor="end">free, typical (median)</text>
+<path class="pool" d="M190,266 h66.7 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-66.7 z"/>
+<text class="val" x="268.7" y="280.0">40</text>
+<path class="mal" d="M190,290 h139.1 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-139.1 z"/>
+<text class="val" x="341.1" y="304.0">81</text>
+<text class="lab" x="176" y="366.0" text-anchor="end">free, worst seen</text>
+<path class="pool" d="M190,340 h66.7 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-66.7 z"/>
+<text class="val" x="268.7" y="354.0">40</text>
+<path class="mal" d="M190,364 h225.7 a4,4 0 0 1 4,4 v12 a4,4 0 0 1 -4,4 h-225.7 z"/>
+<text class="val" x="427.7" y="378.0">130</text>
+<text class="foot" x="28" y="428">With POOL_ALLOC(n), for a size known at compile time, alloc takes 27 cycles (exact, 16/64/256 B).</text>
+<text class="foot" x="28" y="448">One board, one run; the pool&#8217;s figures were identical in every repeat.</text>
+<text class="foot" x="28" y="468">&#8220;Worst seen&#8221; is the highest value observed, not a proven bound.</text>
+</svg>

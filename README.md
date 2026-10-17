@@ -1,12 +1,35 @@
 # afalloc
 
-A dynamic memory allocator written from scratch in C, built to understand what
-actually happens underneath `malloc` and `free`.
+Memory allocators written from scratch in C, to understand what actually happens underneath
+`malloc` and `free`. The most developed part is **[`embedded_pool/`](embedded_pool/)**: a
+fixed-size block pool allocator for microcontrollers, measured on a real Cortex-M4 board.
 
-The repository contains three generations of Linux allocator, written in order
-(the newest, `mmap/afalloc_persistent.c`, is the canonical one), plus a portable
-pool allocator for microcontrollers in [`embedded_pool/`](embedded_pool/) (section 4) and the
-STM32F411RE firmware that uses it on a real board in [`stm32/`](stm32/) (section 5).
+![Pool allocator vs newlib-nano malloc, cycles per call on a Cortex-M4](docs/results.svg)
+
+| On an STM32F411RE at 96 MHz (cycles per call) | pool | newlib-nano `malloc` |
+|---|---|---|
+| alloc, any block size | **36** (27 with `POOL_ALLOC(n)` for compile-time sizes) | 86-90 |
+| free, any block size | **40** | 52-67 |
+| worst alloc seen in a random 10,000-operation workload | 55 | 266 |
+| header per block | 0 bytes | yes |
+
+One board, one run, a synthetic workload: details, method and caveats in
+[`stm32/README.md`](stm32/README.md). The library is tested on a computer, run on emulated
+Cortex-M0/M3/M4/M7 and on the real M4 board, and its tests are themselves tested by injecting 56
+deliberate bugs (53 caught, 3 provably harmless).
+
+**Where to start**
+
+| If you want... | Go to |
+|---|---|
+| to use the pool allocator on your own MCU | [`embedded_pool/README.md`](embedded_pool/README.md) |
+| to see the firmware, the measurements and what was verified on the board | [`stm32/README.md`](stm32/README.md) |
+| the earlier Linux allocators (mmap, arena) and their benchmarks | sections 1-3 below |
+
+The repository contains three generations of Linux allocator, written in order (the newest,
+`mmap/afalloc_persistent.c`, is the canonical one), plus the portable pool allocator for
+microcontrollers in [`embedded_pool/`](embedded_pool/) (section 4) and the STM32F411RE firmware that
+uses it on a real board in [`stm32/`](stm32/) (section 5).
 
 ---
 
