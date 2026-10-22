@@ -7,7 +7,7 @@ BUILD   = build
 PERSIST = mmap/afalloc_persistent.c
 PHDR    = mmap/afalloc_persistent.h
 
-.PHONY: all test tsan valgrind bench bench-compare bench-sizes clean
+.PHONY: all test tsan valgrind bench bench-compare bench-sizes bench-cache clean
 all: test
 
 $(BUILD):
@@ -67,6 +67,13 @@ valgrind: $(BUILD)/stress_plain
 
 bench: $(BUILD)/bench
 	$(BUILD)/bench
+
+# Does the allocator's placement policy change cache use? (macOS only: it uses sysctl and clock_gettime_nsec_np)
+# Single thread, about two minutes, run at low priority. See bench/cache/README.md.
+bench-cache: | $(BUILD)
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -DPOOL_HOST -DPOOL_DEBUG=0 -DPOOL_USER_CONFIG='"cache_bench_pool.h"' \
+	      -Iembedded_pool/include -Ibench/cache bench/cache/cache_bench.c embedded_pool/src/pool.c -o $(BUILD)/cache_bench
+	nice -n 10 $(BUILD)/cache_bench
 
 clean:
 	rm -rf $(BUILD)

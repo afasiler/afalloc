@@ -24,12 +24,14 @@ deliberate bugs (53 caught, 3 provably harmless).
 |---|---|
 | to use the pool allocator on your own MCU | [`embedded_pool/README.md`](embedded_pool/README.md) |
 | to see the firmware, the measurements and what was verified on the board | [`stm32/README.md`](stm32/README.md) |
+| a fast, hardened general-purpose allocator for macOS/Linux (`afalloc`, `afree`, ...) | [`afalloc2/README.md`](afalloc2/README.md) |
 | the earlier Linux allocators (mmap, arena) and their benchmarks | sections 1-3 below |
 
 The repository contains three generations of Linux allocator, written in order (the newest,
 `mmap/afalloc_persistent.c`, is the canonical one), plus the portable pool allocator for
-microcontrollers in [`embedded_pool/`](embedded_pool/) (section 4) and the STM32F411RE firmware that
-uses it on a real board in [`stm32/`](stm32/) (section 5).
+microcontrollers in [`embedded_pool/`](embedded_pool/) (section 4), the STM32F411RE firmware that
+uses it on a real board in [`stm32/`](stm32/) (section 5), and a fast hardened allocator for macOS/Linux in
+[`afalloc2/`](afalloc2/) (section 6).
 
 ---
 
@@ -262,6 +264,27 @@ make APP=blink flash # write the first test program to the board (needs OpenOCD)
 
 Everything else (memory map, clock rationale, benchmark method, verification table,
 open items) is in [`stm32/README.md`](stm32/README.md).
+
+---
+
+## 6. `afalloc2/` — a fast, hardened general-purpose allocator (macOS, Linux code)
+
+A from-scratch rewrite of the mmap allocator, aimed at both speed and resistance to heap memory-safety bugs.
+Thread-local heaps with lock-free cross-thread frees, 40 size classes in 256 KiB slabs, metadata kept outside
+the heap, and three security levels you can pick (`AFALLOC_SECURE=0|1|2`): encrypted free-list links, validated
+frees, guard pages, an exact double-free bitmap, zero-on-free and delayed reuse at level 2.
+
+- **Measured on an Apple M4** against Apple's own allocator (xzone malloc): levels 0 and 1 are 2.3 to 4.2 times
+  faster on small blocks and about 3 times faster on 8 threads; level 2 is slower than Apple's for 256 B to
+  1 KiB blocks. The comparison is not like for like (Apple's does more security work, with hardware features
+  this one cannot use).
+- **Tested** on all three levels, under ThreadSanitizer, with security tests that commit each bug in a child
+  process, a memory soak test, and mutation testing (45 injected bugs, 44 caught, 1 that changes no behaviour).
+  Mutation testing exposed weak tests and a real memory-retention flaw, both fixed.
+- **Not production-ready:** run only on macOS/Apple Silicon, not tried with real programs, no `fork()` support,
+  not a drop-in `malloc` replacement. Limits and caveats are in `afalloc2/README.md`.
+- `bench/cache/` holds a separate experiment on how an allocator's placement policy affects the CPU cache,
+  including a reading of Apple's allocator source.
 
 ---
 

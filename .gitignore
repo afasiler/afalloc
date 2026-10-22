@@ -5,3 +5,4 @@ kaynak/
 *.pdf
 *.dSYM
 build/
+afalloc2/build_bench
