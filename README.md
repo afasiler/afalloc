@@ -6,7 +6,7 @@ fixed-size block pool allocator for microcontrollers, measured on a real Cortex-
 
 ![Pool allocator vs newlib-nano malloc, cycles per call on a Cortex-M4](docs/results.svg)
 
-| On an STM32F411RE at 96 MHz (cycles per call) | pool | newlib-nano `malloc` |
+| On an STM32F411RE at 96 MHz (cycles per call) | afalloc | newlib-nano `malloc` |
 |---|---|---|
 | alloc, any block size | **36** (27 with `POOL_ALLOC(n)` for compile-time sizes) | 86-90 |
 | free, any block size | **40** | 52-67 |
