@@ -4,7 +4,7 @@ Memory allocators written from scratch in C, to understand what actually happens
 `malloc` and `free`. The most developed part is **[`embedded_pool/`](embedded_pool/)**: a
 fixed-size block pool allocator for microcontrollers, measured on a real Cortex-M4 board.
 
-![Pool allocator vs newlib-nano malloc, cycles per call on a Cortex-M4](docs/results.svg)
+![afalloc vs newlib-nano malloc, cycles per call on a Cortex-M4](docs/results.svg)
 
 | On an STM32F411RE at 96 MHz (cycles per call) | afalloc | newlib-nano `malloc` |
 |---|---|---|
