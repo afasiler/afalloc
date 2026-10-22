@@ -4,6 +4,7 @@
 #   make test-security   every memory-safety bug in a child process: is it caught?
 #   make test-tsan       the functional tests under ThreadSanitizer (reduced size; slow)
 #   make bench           benchmarks against the system allocator and the old afalloc (macOS)
+#   make realworld       SQLite, game, ray tracer and AI proxies: whole-program effect of the allocator
 #   make mutate          inject bugs into afalloc.c and check the tests notice
 CC ?= cc
 CFLAGS ?= -std=gnu11 -O2 -g -Wall -Wextra -pthread
@@ -34,6 +35,9 @@ test-tsan: | $(BUILD)
 bench:
 	python3 bench/run_bench.py
 
+realworld:
+	python3 realworld/run_realworld.py
+
 mutate:
 	python3 tools/mutate_afalloc.py
 
@@ -41,6 +45,6 @@ $(BUILD):
 	mkdir -p $(BUILD)
 
 clean:
-	rm -rf $(BUILD) build_bench
+	rm -rf $(BUILD) build_bench build_rw
 
-.PHONY: test test-soak test-security test-tsan bench mutate clean
+.PHONY: realworld test test-soak test-security test-tsan bench mutate clean

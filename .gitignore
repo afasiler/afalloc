@@ -6,3 +6,4 @@ kaynak/
 *.dSYM
 build/
 afalloc2/build_bench
+afalloc2/build_rw/

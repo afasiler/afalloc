@@ -112,6 +112,40 @@ type-isolated buckets) that levels 0 and 1 here do not, so the speed comparison 
 - The memory row shows the system allocator's footprint growing when blocks are freed at random and the space
   is reused; I did not investigate why. Right after the allocation, afalloc used 94 MB against 97 MB.
 
+## In real programs
+
+The numbers above are the cost of one call. What a whole program gains depends on how much of its time goes
+into the allocator. `make realworld` runs SQLite (the system library, with its allocator replaced through the
+official `sqlite3_config(SQLITE_CONFIG_MALLOC)` hook) and three small programs written as proxies for a game
+loop, a CPU ray tracer and AI work, each with the system allocator and with afalloc at levels 0, 1 and 2.
+Runs are interleaved, each cell is the median of 5 runs, and a checksum must be identical in every variant.
+Apple M4. The proxies are mine, not real engines or frameworks.
+
+| Program (what it stresses) | allocations | system | afalloc L0 | afalloc L1 | afalloc L2 | L1 vs system |
+|---|---:|---:|---:|---:|---:|---:|
+| SQLite, in-memory, 250k rows, indexes, group/sort, joins, updates (total ms) | 1.9 million | 769 | 734 | 742 | 788 | **-3.4%** |
+| game loop proxy, average frame (ms) | 21.9 million | 2.08 | 1.69 | 1.75 | 1.95 | **-16%** |
+| game loop proxy, 99th-percentile frame (ms) | | 2.81 | 2.27 | 2.36 | 2.63 | **-16%** |
+| ray tracer: load text asset (ms) | 0.5 million | 174 | 171 | 172 | 172 | -1.5% |
+| ray tracer: build BVH (ms) | | 50.4 | 53.3 | 53.6 | 53.9 | +6% (slower) |
+| ray tracer: render, no allocation (ms) | | 1038 | 994 | 996 | 987 | -4% |
+| AI: MLP inference, per run (ms) | 3.2 million (all in the next row) | 9.17 | 9.16 | 9.17 | 9.18 | 0.0% |
+| AI: tokenizer / data pipeline (ms) | 3.2 million | 229 | 190 | 196 | 230 | **-14%** |
+
+What this says:
+- A program gains roughly **(number of allocations) x (about 9 ns)**. The game proxy makes 22 million
+  allocations in about a second and saves about 175 ms (measured: 190 ms); SQLite makes 1.9 million and saves
+  about 17 ms (measured 27 ms); the tokenizer makes 3.2 million and saves about 28 ms (measured 33 ms).
+- **Compute-bound work does not change.** The neural-network inference (matrix math, 9 ms) is identical to the
+  second decimal; ray tracing without allocation is within a few percent.
+- The game proxy is **far more allocation-heavy than a real game**: about 48,000 allocations per frame
+  (spatial hash, A* nodes, event objects, particle list nodes). Real engines use pools and arenas and allocate
+  far less, so expect a small fraction of that 16%. The p99 frame improving by the same amount is the more
+  interesting part: it means no extra spikes.
+- It is **not faster everywhere**: building the BVH was 6% slower, and the ray tracer's allocation-free render
+  loop was 4% faster, which I attribute to where the tree nodes end up in memory, not to the call speed (I did
+  not isolate it). Level 2 gives little or nothing in these programs: its extra work eats the savings.
+
 ## Compared with Apple's xzone malloc
 
 Apple's allocator (derived from mimalloc, source in `apple-oss-distributions/libmalloc`) is built for
@@ -132,6 +166,7 @@ protections this one cannot have.
 | `make test-security` | each bug above, in a child process, at each level; a promised detection that is missed fails the test |
 | `make test-soak` | memory stays bounded: 6 rounds of 200,000 blocks freed by other threads, live producers whose consumers free their blocks, and six scenarios where memory must move between size classes (a thread frees 64-byte blocks and 1 KiB blocks then need the same slabs; the owner exits; blocks are freed after the owner exited). Also calls `afcheck()`, which verifies the allocator's own bookkeeping |
 | `make test-tsan` | the functional and soak tests under ThreadSanitizer (reduced size): no data race reported at any level |
+| `make realworld` | SQLite, a game-loop proxy, a ray tracer and AI proxies with the system allocator and afalloc (median of 5 interleaved runs; checksums must agree) |
 | `make mutate` | 45 deliberate bugs injected into `afalloc.c` one at a time; the tests must notice each |
 
 ### Mutation testing: do the tests catch bugs?
